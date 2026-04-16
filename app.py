@@ -228,54 +228,63 @@ DASHBOARD_HTML = """
 <title>Cmvng Bot — Signal Dashboard</title>
 <style>
   * { box-sizing: border-box; margin: 0; padding: 0; }
-  body { font-family: -apple-system, Arial, sans-serif; background: #0f0f0f; color: #e0e0e0; }
-  .header { padding: 24px 32px; border-bottom: 1px solid #222; display: flex; align-items: center; justify-content: space-between; }
-  .header h1 { font-size: 18px; font-weight: 600; color: #fff; }
-  .header .live { font-size: 12px; color: #4caf50; display: flex; align-items: center; gap: 6px; }
-  .live-dot { width: 7px; height: 7px; background: #4caf50; border-radius: 50%; animation: pulse 2s infinite; }
-  @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.3} }
-  .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 16px; padding: 24px 32px; }
-  .stat { background: #1a1a1a; border: 1px solid #2a2a2a; border-radius: 10px; padding: 16px; }
-  .stat-label { font-size: 11px; color: #888; text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 6px; }
-  .stat-val { font-size: 26px; font-weight: 700; color: #fff; }
-  .stat-val.green { color: #4caf50; }
-  .stat-val.red { color: #f44336; }
-  .stat-val.amber { color: #ff9800; }
+  body { font-family: -apple-system, Arial, sans-serif; background: #f0f7f0; color: #1a2e1a; }
+  .header { padding: 20px 32px; background: #1e5c2e; display: flex; align-items: center; justify-content: space-between; box-shadow: 0 2px 8px rgba(0,0,0,0.15); }
+  .header h1 { font-size: 18px; font-weight: 700; color: #fff; letter-spacing: 0.02em; }
+  .header-right { display: flex; align-items: center; gap: 16px; }
+  .header .live { font-size: 12px; color: #a8e6b8; display: flex; align-items: center; gap: 6px; }
+  .live-dot { width: 7px; height: 7px; background: #a8e6b8; border-radius: 50%; animation: pulse 2s infinite; }
+  @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.4} }
+  .header-date { font-size: 12px; color: #a8e6b8; }
+  .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 14px; padding: 24px 32px; }
+  .stat { background: #fff; border: 1px solid #c8e6c9; border-radius: 12px; padding: 16px 18px; box-shadow: 0 1px 4px rgba(0,0,0,0.06); }
+  .stat-label { font-size: 11px; color: #5a8a5a; text-transform: uppercase; letter-spacing: 0.06em; margin-bottom: 6px; font-weight: 600; }
+  .stat-val { font-size: 26px; font-weight: 700; color: #1a2e1a; }
+  .stat-val.green { color: #2e7d32; }
+  .stat-val.red   { color: #c62828; }
+  .stat-val.amber { color: #e65100; }
   .section { padding: 0 32px 32px; }
-  .section-title { font-size: 13px; font-weight: 600; color: #888; text-transform: uppercase; letter-spacing: 0.08em; margin-bottom: 14px; }
-  table { width: 100%; border-collapse: collapse; font-size: 13px; }
-  th { text-align: left; padding: 10px 12px; font-size: 11px; color: #555; text-transform: uppercase; letter-spacing: 0.05em; border-bottom: 1px solid #222; }
-  td { padding: 11px 12px; border-bottom: 1px solid #1a1a1a; }
-  tr:hover td { background: #1a1a1a; }
-  .badge { display: inline-block; padding: 2px 9px; border-radius: 20px; font-size: 11px; font-weight: 600; }
-  .pending  { background: #1a2a3a; color: #64b5f6; }
-  .tp       { background: #1a3a1a; color: #4caf50; }
-  .sl       { background: #3a1a1a; color: #f44336; }
-  .expired  { background: #2a2a2a; color: #888; }
-  .buy      { color: #4caf50; font-weight: 700; }
-  .sell     { color: #f44336; font-weight: 700; }
-  .t1       { color: #64b5f6; font-size: 11px; }
-  .t2       { color: #ff9800; font-size: 11px; }
-  .crypto   { color: #ce93d8; font-size: 11px; }
-  .btn { padding: 4px 10px; border-radius: 6px; border: none; cursor: pointer; font-size: 11px; font-weight: 600; margin-right: 4px; }
-  .btn-tp  { background: #1a3a1a; color: #4caf50; }
-  .btn-sl  { background: #3a1a1a; color: #f44336; }
-  .btn-exp { background: #2a2a2a; color: #888; }
-  .pair-stats { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 12px; margin-bottom: 32px; }
-  .pair-card { background: #1a1a1a; border: 1px solid #2a2a2a; border-radius: 10px; padding: 14px; }
-  .pair-name { font-size: 14px; font-weight: 700; color: #fff; margin-bottom: 4px; }
-  .pair-tf   { font-size: 11px; color: #666; margin-bottom: 10px; }
+  .section-title { font-size: 12px; font-weight: 700; color: #5a8a5a; text-transform: uppercase; letter-spacing: 0.08em; margin-bottom: 14px; padding-bottom: 8px; border-bottom: 2px solid #c8e6c9; }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; background: #fff; border-radius: 12px; overflow: hidden; box-shadow: 0 1px 4px rgba(0,0,0,0.06); }
+  th { text-align: left; padding: 11px 14px; font-size: 11px; color: #5a8a5a; text-transform: uppercase; letter-spacing: 0.05em; border-bottom: 1px solid #e8f5e9; background: #f5fdf5; font-weight: 700; }
+  td { padding: 11px 14px; border-bottom: 1px solid #f0f9f0; color: #1a2e1a; }
+  tr:last-child td { border-bottom: none; }
+  tr:hover td { background: #f0faf0; }
+  .badge { display: inline-block; padding: 3px 10px; border-radius: 20px; font-size: 11px; font-weight: 700; }
+  .pending { background: #e3f2fd; color: #1565c0; }
+  .tp      { background: #e8f5e9; color: #2e7d32; }
+  .sl      { background: #ffebee; color: #c62828; }
+  .expired { background: #f5f5f5; color: #757575; }
+  .buy     { color: #2e7d32; font-weight: 700; }
+  .sell    { color: #c62828; font-weight: 700; }
+  .t1      { background: #e8f5e9; color: #1b5e20; padding: 2px 8px; border-radius: 20px; font-size: 11px; font-weight: 600; }
+  .t2      { background: #fff8e1; color: #e65100; padding: 2px 8px; border-radius: 20px; font-size: 11px; font-weight: 600; }
+  .crypto  { background: #f3e5f5; color: #6a1b9a; padding: 2px 8px; border-radius: 20px; font-size: 11px; font-weight: 600; }
+  .btn { padding: 4px 11px; border-radius: 6px; border: none; cursor: pointer; font-size: 11px; font-weight: 700; margin-right: 4px; transition: opacity 0.15s; }
+  .btn:hover { opacity: 0.8; }
+  .btn-tp  { background: #e8f5e9; color: #2e7d32; border: 1px solid #a5d6a7; }
+  .btn-sl  { background: #ffebee; color: #c62828; border: 1px solid #ef9a9a; }
+  .btn-exp { background: #f5f5f5; color: #757575; border: 1px solid #e0e0e0; }
+  .pair-stats { display: grid; grid-template-columns: repeat(auto-fill, minmax(210px, 1fr)); gap: 14px; margin-bottom: 32px; }
+  .pair-card { background: #fff; border: 1px solid #c8e6c9; border-radius: 12px; padding: 16px; box-shadow: 0 1px 4px rgba(0,0,0,0.06); border-left: 4px solid #2e7d32; }
+  .pair-name { font-size: 15px; font-weight: 700; color: #1a2e1a; margin-bottom: 3px; }
+  .pair-tf   { font-size: 11px; color: #7ab87a; margin-bottom: 12px; }
   .pair-nums { display: flex; gap: 16px; }
-  .pair-num  { font-size: 12px; color: #888; }
-  .pair-num span { display: block; font-size: 16px; font-weight: 700; color: #fff; }
-  .refresh { font-size: 12px; color: #555; text-align: right; padding: 0 32px 16px; }
+  .pair-num  { font-size: 11px; color: #7ab87a; font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em; }
+  .pair-num span { display: block; font-size: 17px; font-weight: 700; color: #1a2e1a; margin-top: 2px; }
+  .refresh { font-size: 11px; color: #a0c8a0; text-align: right; padding: 0 32px 20px; }
+  .empty-state { text-align: center; padding: 48px; color: #7ab87a; font-size: 14px; }
+  .empty-icon { font-size: 40px; margin-bottom: 12px; }
 </style>
 </head>
 <body>
 
 <div class="header">
   <h1>Cmvng Bot — Signal Dashboard</h1>
-  <div class="live"><div class="live-dot"></div> Live</div>
+  <div class="header-right">
+    <div class="header-date" id="hdate"></div>
+    <div class="live"><div class="live-dot"></div> Live</div>
+  </div>
 </div>
 
 <div class="stats">
@@ -319,7 +328,10 @@ DASHBOARD_HTML = """
       </tr>
     </thead>
     <tbody>
-      {% for s in signals %}
+      {% if not signals %}
+    <tr><td colspan="13"><div class="empty-state"><div class="empty-icon">📡</div>No signals yet — alerts will appear here automatically</div></td></tr>
+    {% endif %}
+    {% for s in signals %}
       <tr>
         <td style="color:#555">{{ s.id }}</td>
         <td style="font-weight:600;color:#fff">{{ s.pair }}</td>
@@ -358,6 +370,8 @@ function update(id, status) {
     .then(() => location.reload());
 }
 setTimeout(() => location.reload(), 60000);
+const d = new Date();
+document.getElementById('hdate').textContent = d.toLocaleDateString('en-GB', {day:'numeric',month:'short',year:'numeric'});
 </script>
 </body>
 </html>
