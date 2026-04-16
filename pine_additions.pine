@@ -1,0 +1,31 @@
+// ═══════════════════════════════════════════════════════════
+// ADD THESE LINES TO YOUR CMVNG BOT STRATEGY (ut_bot_final.pine)
+// Place them at the very bottom of the script
+// These expose entry/SL/TP values to TradingView alerts
+// ═══════════════════════════════════════════════════════════
+
+// Hidden plots for webhook data — do not display on chart
+plot(b_entry, title="Buy Entry",  display=display.none, editable=false)
+plot(b_sl,    title="Buy SL",     display=display.none, editable=false)
+plot(b_tp1,   title="Buy TP",     display=display.none, editable=false)
+plot(s_entry, title="Sell Entry", display=display.none, editable=false)
+plot(s_sl,    title="Sell SL",    display=display.none, editable=false)
+plot(s_tp1,   title="Sell TP",    display=display.none, editable=false)
+
+// ═══════════════════════════════════════════════════════════
+// TRADINGVIEW ALERT MESSAGE TEMPLATES
+// Use these exact JSON messages when creating alerts
+// Replace PAIR and TIMEFRAME for each alert
+// ═══════════════════════════════════════════════════════════
+
+// BUY ALERT MESSAGE:
+// {"pair":"XAUUSD","timeframe":"30M","direction":"BUY","entry":"{{plot("Buy Entry")}}","sl":"{{plot("Buy SL")}}","tp":"{{plot("Buy TP")}}"}
+
+// SELL ALERT MESSAGE:
+// {"pair":"XAUUSD","timeframe":"30M","direction":"SELL","entry":"{{plot("Sell Entry")}}","sl":"{{plot("Sell SL")}}","tp":"{{plot("Sell TP")}}"}
+
+// ═══════════════════════════════════════════════════════════
+// ALERT CONDITIONS (already in the strategy):
+// alertcondition(valid_buy,  "Buy Signal",  "...")
+// alertcondition(valid_sell, "Sell Signal", "...")
+// ═══════════════════════════════════════════════════════════
