@@ -1,6 +1,7 @@
 from flask import Flask, request, jsonify, render_template_string
 import requests
-import sqlite3
+import psycopg2
+from psycopg2.extras import RealDictCursor
 import os
 import threading
 import time
@@ -11,9 +12,9 @@ app = Flask(__name__)
 TELEGRAM_TOKEN   = os.environ.get("TELEGRAM_TOKEN", "")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "")
 TWELVEDATA_KEY   = os.environ.get("TWELVEDATA_KEY", "")
-DB_PATH          = "signals.db"
+DATABASE_URL     = os.environ.get("DATABASE_URL", "")
 EXPIRY_DAYS      = 3
-CHECK_INTERVAL   = 900  # 15 minutes = 96 checks/day = 1 API call each
+CHECK_INTERVAL   = 900
 
 PAIRS = {
     "XAUUSD_30M":  {"category": "Tier 1", "risk": 0.5,  "grade": "A - Strong"},
@@ -47,24 +48,40 @@ SYMBOL_MAP = {
     "ETHUSD": "ETH/USD", "XRPUSD": "XRP/USD", "HYPEUSD": "HYPE/USD",
 }
 
+# ═══════════════════════════════════════════════════════════
+# DATABASE — PostgreSQL (persists across redeploys)
+# ═══════════════════════════════════════════════════════════
+
+def get_db():
+    return psycopg2.connect(DATABASE_URL, sslmode="require")
+
 def init_db():
-    conn = sqlite3.connect(DB_PATH)
+    conn = get_db()
     c = conn.cursor()
-    c.execute('''CREATE TABLE IF NOT EXISTS signals (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        pair TEXT, timeframe TEXT, direction TEXT,
-        entry REAL, sl REAL, tp REAL, rr REAL,
-        risk REAL, category TEXT, grade TEXT,
-        status TEXT DEFAULT "Pending",
-        fired_at TEXT, closed_at TEXT
-    )''')
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS signals (
+            id        SERIAL PRIMARY KEY,
+            pair      TEXT,
+            timeframe TEXT,
+            direction TEXT,
+            entry     REAL,
+            sl        REAL,
+            tp        REAL,
+            rr        REAL,
+            risk      REAL,
+            category  TEXT,
+            grade     TEXT,
+            status    TEXT DEFAULT 'Pending',
+            fired_at  TEXT,
+            closed_at TEXT
+        )
+    """)
     conn.commit()
     conn.close()
 
-def get_db():
-    conn = sqlite3.connect(DB_PATH)
-    conn.row_factory = sqlite3.Row
-    return conn
+# ═══════════════════════════════════════════════════════════
+# TELEGRAM
+# ═══════════════════════════════════════════════════════════
 
 def send_telegram(message):
     if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID:
@@ -78,8 +95,11 @@ def send_telegram(message):
     except Exception as e:
         print("Telegram error: {}".format(e))
 
+# ═══════════════════════════════════════════════════════════
+# TWELVEDATA — batch price fetch (1 API call for all pairs)
+# ═══════════════════════════════════════════════════════════
+
 def get_prices_batch(pairs):
-    """Fetch all pair prices in ONE API call — saves rate limit quota"""
     symbols = []
     pair_to_symbol = {}
     for pair in pairs:
@@ -101,10 +121,8 @@ def get_prices_batch(pairs):
             symbol = pair_to_symbol.get(pair.upper())
             if not symbol:
                 continue
-            # Batch response uses symbol as key
             if symbol in data and "price" in data[symbol]:
                 prices[pair.upper()] = float(data[symbol]["price"])
-            # Single symbol response returns price directly
             elif "price" in data and len(symbols) == 1:
                 prices[pair.upper()] = float(data["price"])
         return prices
@@ -112,10 +130,15 @@ def get_prices_batch(pairs):
         print("TwelveData batch error: {}".format(e))
         return {}
 
+# ═══════════════════════════════════════════════════════════
+# AUTO UPDATE SIGNAL STATUS
+# ═══════════════════════════════════════════════════════════
+
 def update_signal_auto(sig_id, status, pair, direction, price=None, tp=None, sl=None):
-    conn = sqlite3.connect(DB_PATH)
-    conn.execute("UPDATE signals SET status=?, closed_at=? WHERE id=?",
-                 (status, datetime.now(timezone.utc).isoformat(), sig_id))
+    conn = get_db()
+    c = conn.cursor()
+    c.execute("UPDATE signals SET status=%s, closed_at=%s WHERE id=%s",
+              (status, datetime.now(timezone.utc).isoformat(), sig_id))
     conn.commit()
     conn.close()
     if status == "TP Hit":
@@ -127,38 +150,40 @@ def update_signal_auto(sig_id, status, pair, direction, price=None, tp=None, sl=
     send_telegram(msg)
     print("Signal #{} -> {}".format(sig_id, status))
 
+# ═══════════════════════════════════════════════════════════
+# BACKGROUND MONITOR — checks every 15 minutes
+# Uses 1 batch API call for ALL pending pairs
+# Only checks Pending signals — resolved ones never rescanned
+# ═══════════════════════════════════════════════════════════
+
 def check_pending_signals():
     while True:
         try:
-            conn = sqlite3.connect(DB_PATH)
-            conn.row_factory = sqlite3.Row
-            pending = conn.execute("SELECT * FROM signals WHERE status = 'Pending'").fetchall()
+            conn = get_db()
+            cur = conn.cursor(cursor_factory=RealDictCursor)
+            cur.execute("SELECT * FROM signals WHERE status = 'Pending'")
+            pending = cur.fetchall()
             conn.close()
 
             if not pending:
                 time.sleep(CHECK_INTERVAL)
                 continue
 
-            # Get unique pairs from all pending signals — ONE batch API call
             unique_pairs = list(set(s["pair"] for s in pending))
             prices = get_prices_batch(unique_pairs)
-            print("Checked {} pairs, {} pending signals".format(len(unique_pairs), len(pending)))
+            print("Monitor: {} pairs, {} pending signals".format(len(unique_pairs), len(pending)))
 
             for s in pending:
                 try:
-                    # Check expiry first
                     fired_dt = datetime.fromisoformat(s["fired_at"])
                     if fired_dt.tzinfo is None:
                         fired_dt = fired_dt.replace(tzinfo=timezone.utc)
                     if datetime.now(timezone.utc) - fired_dt > timedelta(days=EXPIRY_DAYS):
                         update_signal_auto(s["id"], "Expired", s["pair"], s["direction"])
                         continue
-
-                    # Use batch price — no extra API call
                     price = prices.get(s["pair"].upper())
                     if price is None:
                         continue
-
                     if s["direction"] == "BUY":
                         if price >= s["tp"]:
                             update_signal_auto(s["id"], "TP Hit", s["pair"], s["direction"], price, s["tp"], s["sl"])
@@ -171,11 +196,13 @@ def check_pending_signals():
                             update_signal_auto(s["id"], "SL Hit", s["pair"], s["direction"], price, s["tp"], s["sl"])
                 except Exception as e:
                     print("Signal #{} error: {}".format(s["id"], e))
-
         except Exception as e:
             print("Monitor error: {}".format(e))
-
         time.sleep(CHECK_INTERVAL)
+
+# ═══════════════════════════════════════════════════════════
+# WEBHOOK — receives TradingView alerts
+# ═══════════════════════════════════════════════════════════
 
 @app.route("/webhook", methods=["POST"])
 def webhook():
@@ -195,15 +222,19 @@ def webhook():
         tp_dist   = abs(tp - entry)
         rr        = round(tp_dist / sl_dist, 2) if sl_dist > 0 else 0
         now       = datetime.now(timezone.utc).isoformat()
-        conn      = get_db()
-        c         = conn.cursor()
-        c.execute('''INSERT INTO signals
+
+        conn = get_db()
+        c = conn.cursor()
+        c.execute("""
+            INSERT INTO signals
             (pair,timeframe,direction,entry,sl,tp,rr,risk,category,grade,status,fired_at)
-            VALUES (?,?,?,?,?,?,?,?,?,?,"Pending",?)''',
-            (pair, timeframe, direction, entry, sl, tp, rr, cfg["risk"], cfg["category"], cfg["grade"], now))
-        signal_id = c.lastrowid
+            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,'Pending',%s) RETURNING id
+        """, (pair, timeframe, direction, entry, sl, tp, rr,
+              cfg["risk"], cfg["category"], cfg["grade"], now))
+        signal_id = c.fetchone()[0]
         conn.commit()
         conn.close()
+
         is_jpy   = "JPY" in pair
         is_metal = "XAU" in pair or "XAG" in pair
         dec      = 2 if (is_jpy or is_metal) else 5
@@ -233,22 +264,31 @@ def webhook():
         print("Webhook error: {}".format(e))
         return jsonify({"error": str(e)}), 500
 
+# ═══════════════════════════════════════════════════════════
+# MANUAL UPDATE
+# ═══════════════════════════════════════════════════════════
+
 @app.route("/update/<int:signal_id>/<status>", methods=["POST"])
 def update_signal(signal_id, status):
     if status not in ["TP Hit", "SL Hit", "Expired", "Pending"]:
         return jsonify({"error": "Invalid status"}), 400
     conn = get_db()
-    conn.execute("UPDATE signals SET status=?, closed_at=? WHERE id=?",
-                 (status, datetime.now(timezone.utc).isoformat(), signal_id))
+    c = conn.cursor()
+    c.execute("UPDATE signals SET status=%s, closed_at=%s WHERE id=%s",
+              (status, datetime.now(timezone.utc).isoformat(), signal_id))
     conn.commit()
     conn.close()
     emoji = "✅" if status == "TP Hit" else "❌" if status == "SL Hit" else "⏰"
     send_telegram("{} Signal #{} — <b>{}</b>".format(emoji, signal_id, status))
     return jsonify({"status": "updated"}), 200
 
+# ═══════════════════════════════════════════════════════════
+# DASHBOARD
+# ═══════════════════════════════════════════════════════════
+
 DASHBOARD_HTML = """<!DOCTYPE html>
 <html><head>
-<meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Cmvng Bot</title>
 <style>
 *{box-sizing:border-box;margin:0;padding:0}
@@ -353,15 +393,21 @@ tr:hover td{background:#f0faf0}
           <td>{{ s.risk }}%</td>
           <td><span class="{{ 't1' if s.category == 'Tier 1' else 't2' if s.category == 'Tier 2' else 'cry' }}">{{ s.category }}</span></td>
           <td><span class="bdg {{ 'pnd' if s.status == 'Pending' else 'tph' if s.status == 'TP Hit' else 'slh' if s.status == 'SL Hit' else 'exp' }}">{{ s.status }}</span></td>
-          <td style="color:#aaa;font-size:11px">{{ s.fired_at[:16].replace("T"," ") }}</td>
-          <td>{% if s.status == "Pending" %}<button class="btn btp" onclick="upd({{ s.id }},'TP Hit')">TP</button><button class="btn bsl" onclick="upd({{ s.id }},'SL Hit')">SL</button><button class="btn bex" onclick="upd({{ s.id }},'Expired')">Exp</button>{% endif %}</td>
+          <td style="color:#aaa;font-size:11px">{{ s.fired_at[:16].replace("T"," ") if s.fired_at else "" }}</td>
+          <td>
+            {% if s.status == "Pending" %}
+            <button class="btn btp" onclick="upd({{ s.id }},'TP Hit')">TP</button>
+            <button class="btn bsl" onclick="upd({{ s.id }},'SL Hit')">SL</button>
+            <button class="btn bex" onclick="upd({{ s.id }},'Expired')">Exp</button>
+            {% endif %}
+          </td>
         </tr>
         {% endfor %}
       </tbody>
     </table>
   </div>
 </div>
-<div class="ref">Auto-refreshes every 60s &nbsp;·&nbsp; Prices checked every 5 mins via TwelveData</div>
+<div class="ref">Auto-refreshes every 60s &nbsp;·&nbsp; Prices checked every 15 mins &nbsp;·&nbsp; Data stored in PostgreSQL</div>
 <script>
 function upd(id,s){fetch('/update/'+id+'/'+encodeURIComponent(s),{method:'POST'}).then(()=>location.reload())}
 setTimeout(()=>location.reload(),60000);
@@ -371,36 +417,42 @@ document.getElementById('hd').textContent=new Date().toLocaleDateString('en-GB',
 
 @app.route("/")
 def dashboard():
-    conn     = get_db()
-    signals  = conn.execute("SELECT * FROM signals ORDER BY id DESC").fetchall()
-    total    = len(signals)
-    tp       = sum(1 for s in signals if s["status"] == "TP Hit")
-    sl       = sum(1 for s in signals if s["status"] == "SL Hit")
-    pending  = sum(1 for s in signals if s["status"] == "Pending")
-    closed   = tp + sl
-    wr       = round(tp / closed * 100, 1) if closed > 0 else 0
-    pf       = round((tp * 1.5) / sl, 2) if sl > 0 else 0
-    stats    = {"total": total, "tp": tp, "sl": sl, "pending": pending, "wr": wr, "pf": pf}
-    pairs_raw = conn.execute("""
+    conn = get_db()
+    cur  = conn.cursor(cursor_factory=RealDictCursor)
+    cur.execute("SELECT * FROM signals ORDER BY id DESC")
+    signals = cur.fetchall()
+    cur.execute("""
         SELECT pair, timeframe, category, risk,
                COUNT(*) as total,
                SUM(CASE WHEN status='TP Hit' THEN 1 ELSE 0 END) as tp,
                SUM(CASE WHEN status='SL Hit' THEN 1 ELSE 0 END) as sl
-        FROM signals GROUP BY pair, timeframe ORDER BY total DESC
-    """).fetchall()
+        FROM signals GROUP BY pair, timeframe, category, risk ORDER BY total DESC
+    """)
+    pair_stats = cur.fetchall()
     conn.close()
-    pair_stats = [dict(p) for p in pairs_raw]
+    total   = len(signals)
+    tp      = sum(1 for s in signals if s["status"] == "TP Hit")
+    sl      = sum(1 for s in signals if s["status"] == "SL Hit")
+    pending = sum(1 for s in signals if s["status"] == "Pending")
+    closed  = tp + sl
+    wr      = round(tp / closed * 100, 1) if closed > 0 else 0
+    pf      = round((tp * 1.5) / sl, 2) if sl > 0 else 0
+    stats   = {"total": total, "tp": tp, "sl": sl, "pending": pending, "wr": wr, "pf": pf}
     return render_template_string(DASHBOARD_HTML, signals=signals, stats=stats, pair_stats=pair_stats)
 
 @app.route("/test")
 def test():
-    send_telegram("✅ <b>Cmvng Bot is live!</b>\n\nAuto price monitoring active via TwelveData.\nSignals will appear automatically.")
+    send_telegram("✅ <b>Cmvng Bot is live!</b>\n\nPostgreSQL connected — data persists forever.\nAuto price monitoring active via TwelveData.")
     return jsonify({"status": "ok"}), 200
+
+# ═══════════════════════════════════════════════════════════
+# STARTUP
+# ═══════════════════════════════════════════════════════════
 
 init_db()
 monitor_thread = threading.Thread(target=check_pending_signals, daemon=True)
 monitor_thread.start()
-print("Cmvng Bot started — price monitor running every 5 minutes")
+print("Cmvng Bot started — PostgreSQL connected, monitor running")
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
