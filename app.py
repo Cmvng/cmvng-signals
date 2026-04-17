@@ -34,6 +34,17 @@ PAIRS = {
     "BNBUSD_1H":   {"category": "Crypto", "risk": 0.1,  "grade": "B - Good"},
     "BTCUSD_15M":  {"category": "Crypto", "risk": 0.1,  "grade": "A - Strong"},
     "ZECUSD_15M":  {"category": "Crypto", "risk": 0.1,  "grade": "A - Strong"},
+    "MNTUSD_15M":  {"category": "Crypto", "risk": 0.1,  "grade": "A - Strong"},
+    "MNTUSD_1H":   {"category": "Crypto", "risk": 0.1,  "grade": "A - Strong"},
+    "GBPNZD_30M":  {"category": "Tier 1", "risk": 0.5,  "grade": "A - Strong"},
+    "EURUSD_30M":  {"category": "Tier 1", "risk": 0.5,  "grade": "A - Strong"},
+    "NZDCAD_1H":   {"category": "Tier 1", "risk": 0.5,  "grade": "A - Strong"},
+    "CADJPY_30M":  {"category": "Tier 2", "risk": 0.25, "grade": "B - Good"},
+    "EURCAD_30M":  {"category": "Tier 2", "risk": 0.25, "grade": "B - Good"},
+    "GBPCAD_15M":  {"category": "Tier 2", "risk": 0.25, "grade": "B - Good"},
+    "GBPAUD_15M":  {"category": "Tier 2", "risk": 0.25, "grade": "B - Good"},
+    "SOLUSD_15M":  {"category": "Crypto", "risk": 0.1,  "grade": "B - Good"},
+    "ETHUSD_15M":  {"category": "Crypto", "risk": 0.1,  "grade": "B - Good"},
 }
 
 SYMBOL_MAP = {
@@ -45,7 +56,37 @@ SYMBOL_MAP = {
     "CADJPY": "CAD/JPY", "AUDUSD": "AUD/USD", "EURCAD": "EUR/CAD",
     "BNBUSD": "BNB/USD", "ZECUSD": "ZEC/USD", "SOLUSD": "SOL/USD",
     "ETHUSD": "ETH/USD", "XRPUSD": "XRP/USD", "HYPEUSD": "HYPE/USD",
+    "MNTUSD": "MNT/USD",
 }
+
+# Binance symbol map — fallback for crypto pairs not on TwelveData
+BINANCE_MAP = {
+    "MNTUSD": "MNTUSDT",
+    "ADAUSD": "ADAUSDT",
+    "BTCUSD": "BTCUSDT",
+    "ETHUSD": "ETHUSDT",
+    "BNBUSD": "BNBUSDT",
+    "SOLUSD": "SOLUSDT",
+    "XRPUSD": "XRPUSDT",
+    "ZECUSD": "ZECUSDT",
+    "HYPEUSD": "HYPEUSDT",
+}
+
+def get_binance_price(pair):
+    symbol = BINANCE_MAP.get(pair.upper())
+    if not symbol:
+        return None
+    try:
+        r = requests.get(
+            "https://api.binance.com/api/v3/ticker/price?symbol={}".format(symbol),
+            timeout=10
+        )
+        data = r.json()
+        if "price" in data:
+            return float(data["price"])
+    except Exception as e:
+        print("Binance error {}: {}".format(pair, e))
+    return None
 
 # ═══════════════════════════════════════════════════════════
 # DATABASE — PostgreSQL (persists across redeploys)
@@ -146,10 +187,24 @@ def get_prices_batch(pairs):
                 prices[pair.upper()] = float(data[symbol]["price"])
             elif "price" in data and len(symbols) == 1:
                 prices[pair.upper()] = float(data["price"])
+        # Fallback to Binance for any crypto pairs not found via TwelveData
+        for pair in pairs:
+            if pair.upper() not in prices and pair.upper() in BINANCE_MAP:
+                bp = get_binance_price(pair)
+                if bp is not None:
+                    prices[pair.upper()] = bp
+                    print("Binance fallback: {} = {}".format(pair, bp))
         return prices
     except Exception as e:
         print("TwelveData batch error: {}".format(e))
-        return {}
+        # If TwelveData fails entirely, try Binance for all crypto
+        prices = {}
+        for pair in pairs:
+            if pair.upper() in BINANCE_MAP:
+                bp = get_binance_price(pair)
+                if bp is not None:
+                    prices[pair.upper()] = bp
+        return prices
 
 # ═══════════════════════════════════════════════════════════
 # AUTO UPDATE SIGNAL STATUS
