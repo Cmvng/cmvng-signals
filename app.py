@@ -13,7 +13,7 @@ TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "")
 TWELVEDATA_KEY   = os.environ.get("TWELVEDATA_KEY", "")
 DB_PATH          = "signals.db"
 EXPIRY_DAYS      = 3
-CHECK_INTERVAL   = 300
+CHECK_INTERVAL   = 900  # 15 minutes = 96 checks/day = 1 API call each
 
 PAIRS = {
     "XAUUSD_30M":  {"category": "Tier 1", "risk": 0.5,  "grade": "A - Strong"},
@@ -78,21 +78,39 @@ def send_telegram(message):
     except Exception as e:
         print("Telegram error: {}".format(e))
 
-def get_current_price(pair):
-    symbol = SYMBOL_MAP.get(pair.upper())
-    if not symbol or not TWELVEDATA_KEY:
-        return None
+def get_prices_batch(pairs):
+    """Fetch all pair prices in ONE API call — saves rate limit quota"""
+    symbols = []
+    pair_to_symbol = {}
+    for pair in pairs:
+        symbol = SYMBOL_MAP.get(pair.upper())
+        if symbol:
+            symbols.append(symbol)
+            pair_to_symbol[pair.upper()] = symbol
+    if not symbols or not TWELVEDATA_KEY:
+        return {}
     try:
+        symbol_str = ",".join(symbols)
         r = requests.get(
-            "https://api.twelvedata.com/price?symbol={}&apikey={}".format(symbol, TWELVEDATA_KEY),
-            timeout=10
+            "https://api.twelvedata.com/price?symbol={}&apikey={}".format(symbol_str, TWELVEDATA_KEY),
+            timeout=15
         )
         data = r.json()
-        if "price" in data:
-            return float(data["price"])
+        prices = {}
+        for pair in pairs:
+            symbol = pair_to_symbol.get(pair.upper())
+            if not symbol:
+                continue
+            # Batch response uses symbol as key
+            if symbol in data and "price" in data[symbol]:
+                prices[pair.upper()] = float(data[symbol]["price"])
+            # Single symbol response returns price directly
+            elif "price" in data and len(symbols) == 1:
+                prices[pair.upper()] = float(data["price"])
+        return prices
     except Exception as e:
-        print("TwelveData error {}: {}".format(pair, e))
-    return None
+        print("TwelveData batch error: {}".format(e))
+        return {}
 
 def update_signal_auto(sig_id, status, pair, direction, price=None, tp=None, sl=None):
     conn = sqlite3.connect(DB_PATH)
@@ -116,17 +134,31 @@ def check_pending_signals():
             conn.row_factory = sqlite3.Row
             pending = conn.execute("SELECT * FROM signals WHERE status = 'Pending'").fetchall()
             conn.close()
+
+            if not pending:
+                time.sleep(CHECK_INTERVAL)
+                continue
+
+            # Get unique pairs from all pending signals — ONE batch API call
+            unique_pairs = list(set(s["pair"] for s in pending))
+            prices = get_prices_batch(unique_pairs)
+            print("Checked {} pairs, {} pending signals".format(len(unique_pairs), len(pending)))
+
             for s in pending:
                 try:
+                    # Check expiry first
                     fired_dt = datetime.fromisoformat(s["fired_at"])
                     if fired_dt.tzinfo is None:
                         fired_dt = fired_dt.replace(tzinfo=timezone.utc)
                     if datetime.now(timezone.utc) - fired_dt > timedelta(days=EXPIRY_DAYS):
                         update_signal_auto(s["id"], "Expired", s["pair"], s["direction"])
                         continue
-                    price = get_current_price(s["pair"])
+
+                    # Use batch price — no extra API call
+                    price = prices.get(s["pair"].upper())
                     if price is None:
                         continue
+
                     if s["direction"] == "BUY":
                         if price >= s["tp"]:
                             update_signal_auto(s["id"], "TP Hit", s["pair"], s["direction"], price, s["tp"], s["sl"])
@@ -139,8 +171,10 @@ def check_pending_signals():
                             update_signal_auto(s["id"], "SL Hit", s["pair"], s["direction"], price, s["tp"], s["sl"])
                 except Exception as e:
                     print("Signal #{} error: {}".format(s["id"], e))
+
         except Exception as e:
             print("Monitor error: {}".format(e))
+
         time.sleep(CHECK_INTERVAL)
 
 @app.route("/webhook", methods=["POST"])
