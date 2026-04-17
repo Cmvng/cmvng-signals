@@ -3,7 +3,9 @@ import requests
 import json
 import sqlite3
 import os
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
+import threading
+import time
 
 app = Flask(__name__)
 
@@ -13,7 +15,10 @@ app = Flask(__name__)
 
 TELEGRAM_TOKEN  = os.environ.get("TELEGRAM_TOKEN", "")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "")
-DB_PATH         = "signals.db"
+DB_PATH          = "signals.db"
+TWELVEDATA_KEY   = os.environ.get("TWELVEDATA_KEY", "")
+EXPIRY_DAYS      = 3
+CHECK_INTERVAL   = 300
 
 # ═══════════════════════════════════════════════════════════
 # PAIR CONFIGURATION
@@ -44,11 +49,88 @@ PAIRS = {
     "ZECUSD_15M":  {"category": "Crypto", "risk": 0.1,  "grade": "A — Strong"},
 }
 
+# TWELVEDATA SYMBOL MAPPING
+SYMBOL_MAP = {
+    "XAUUSD":"XAU/USD","EURJPY":"EUR/JPY","USDJPY":"USD/JPY",
+    "EURUSD":"EUR/USD","GBPJPY":"GBP/JPY","EURCHF":"EUR/CHF",
+    "GBPUSD":"GBP/USD","EURNZD":"EUR/NZD","ADAUSD":"ADA/USD",
+    "BTCUSD":"BTC/USD","XAGUSD":"XAG/USD","NZDCAD":"NZD/CAD",
+    "GBPNZD":"GBP/NZD","USDCAD":"USD/CAD","GBPCAD":"GBP/CAD",
+    "CADJPY":"CAD/JPY","AUDUSD":"AUD/USD","EURCAD":"EUR/CAD",
+    "BNBUSD":"BNB/USD","ZECUSD":"ZEC/USD","SOLUSD":"SOL/USD",
+    "ETHUSD":"ETH/USD","XRPUSD":"XRP/USD","HYPEUSD":"HYPE/USD",
+}
+
+def get_current_price(pair):
+    symbol = SYMBOL_MAP.get(pair.upper())
+    if not symbol or not TWELVEDATA_KEY:
+        return None
+    try:
+        url = "https://api.twelvedata.com/price?symbol={}&apikey={}".format(symbol, TWELVEDATA_KEY)
+        r = requests.get(url, timeout=10)
+        data = r.json()
+        if "price" in data:
+            return float(data["price"])
+    except Exception as e:
+        print("TwelveData error for {}: {}".format(pair, e))
+    return None
+
+def update_signal_auto(sig_id, status, pair, direction, price=None, tp=None, sl=None):
+    now = datetime.now(timezone.utc).isoformat()
+    conn = sqlite3.connect(DB_PATH)
+    conn.execute("UPDATE signals SET status=?, closed_at=? WHERE id=?", (status, now, sig_id))
+    conn.commit()
+    conn.close()
+    if status == "TP Hit":
+        msg = "✅ <b>TP HIT — {} {}</b>\n──────────────────────\n<b>Price:</b> {}\n<b>TP:</b> {}\n──────────────────────\n🆔 Signal #{}".format(pair, direction, price, tp, sig_id)
+    elif status == "SL Hit":
+        msg = "❌ <b>SL HIT — {} {}</b>\n──────────────────────\n<b>Price:</b> {}\n<b>SL:</b> {}\n──────────────────────\n🆔 Signal #{}".format(pair, direction, price, sl, sig_id)
+    else:
+        msg = "⏰ <b>EXPIRED — {} {}</b> (3 days)\n🆔 Signal #{}".format(pair, direction, sig_id)
+    send_telegram(msg)
+    print("Signal #{} → {}".format(sig_id, status))
+
+def check_pending_signals():
+    while True:
+        try:
+            conn = sqlite3.connect(DB_PATH)
+            conn.row_factory = sqlite3.Row
+            pending = conn.execute("SELECT * FROM signals WHERE status = 'Pending'").fetchall()
+            conn.close()
+            for s in pending:
+                fired_dt = datetime.fromisoformat(s["fired_at"])
+                if datetime.now(timezone.utc) - fired_dt > timedelta(days=EXPIRY_DAYS):
+                    update_signal_auto(s["id"], "Expired", s["pair"], s["direction"])
+                    continue
+                price = get_current_price(s["pair"])
+                if price is None:
+                    continue
+                if s["direction"] == "BUY":
+                    if price >= s["tp"]:
+                        update_signal_auto(s["id"], "TP Hit", s["pair"], s["direction"], price, s["tp"], s["sl"])
+                    elif price <= s["sl"]:
+                        update_signal_auto(s["id"], "SL Hit", s["pair"], s["direction"], price, s["tp"], s["sl"])
+                elif s["direction"] == "SELL":
+                    if price <= s["tp"]:
+                        update_signal_auto(s["id"], "TP Hit", s["pair"], s["direction"], price, s["tp"], s["sl"])
+                    elif price >= s["sl"]:
+                        update_signal_auto(s["id"], "SL Hit", s["pair"], s["direction"], price, s["tp"], s["sl"])
+        except Exception as e:
+            print("Monitor error: {}".format(e))
+        time.sleep(CHECK_INTERVAL)
+
+
+
 # ═══════════════════════════════════════════════════════════
 # DATABASE SETUP
 # ═══════════════════════════════════════════════════════════
 
-def init_db():
+def init_db()
+
+# Start price monitor background thread
+monitor_thread = threading.Thread(target=check_pending_signals, daemon=True)
+monitor_thread.start()
+print("Price monitor started"):
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
     c.execute('''
