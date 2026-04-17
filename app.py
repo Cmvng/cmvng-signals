@@ -1,7 +1,6 @@
 from flask import Flask, request, jsonify, render_template_string
 import requests
-import psycopg2
-from psycopg2.extras import RealDictCursor
+import pg8000.native
 import os
 import threading
 import time
@@ -53,12 +52,21 @@ SYMBOL_MAP = {
 # ═══════════════════════════════════════════════════════════
 
 def get_db():
-    return psycopg2.connect(DATABASE_URL, sslmode="require")
+    import urllib.parse
+    url = urllib.parse.urlparse(DATABASE_URL)
+    conn = pg8000.native.Connection(
+        host=url.hostname,
+        port=url.port or 5432,
+        database=url.path.lstrip('/'),
+        user=url.username,
+        password=url.password,
+        ssl_context=True
+    )
+    return conn
 
 def init_db():
     conn = get_db()
-    c = conn.cursor()
-    c.execute("""
+    conn.run("""
         CREATE TABLE IF NOT EXISTS signals (
             id        SERIAL PRIMARY KEY,
             pair      TEXT,
@@ -76,7 +84,6 @@ def init_db():
             closed_at TEXT
         )
     """)
-    conn.commit()
     conn.close()
 
 # ═══════════════════════════════════════════════════════════
@@ -136,10 +143,8 @@ def get_prices_batch(pairs):
 
 def update_signal_auto(sig_id, status, pair, direction, price=None, tp=None, sl=None):
     conn = get_db()
-    c = conn.cursor()
-    c.execute("UPDATE signals SET status=%s, closed_at=%s WHERE id=%s",
-              (status, datetime.now(timezone.utc).isoformat(), sig_id))
-    conn.commit()
+    conn.run("UPDATE signals SET status=:s, closed_at=:c WHERE id=:i",
+             s=status, c=datetime.now(timezone.utc).isoformat(), i=sig_id)
     conn.close()
     if status == "TP Hit":
         msg = "✅ <b>TP HIT — {} {}</b>\nPrice: {} | TP: {}\n🆔 Signal #{}".format(pair, direction, price, tp, sig_id)
@@ -160,9 +165,9 @@ def check_pending_signals():
     while True:
         try:
             conn = get_db()
-            cur = conn.cursor(cursor_factory=RealDictCursor)
-            cur.execute("SELECT * FROM signals WHERE status = 'Pending'")
-            pending = cur.fetchall()
+            rows = conn.run("SELECT * FROM signals WHERE status = 'Pending'")
+            cols = [c['name'] for c in conn.columns]
+            pending = [dict(zip(cols, r)) for r in rows]
             conn.close()
 
             if not pending:
@@ -224,15 +229,15 @@ def webhook():
         now       = datetime.now(timezone.utc).isoformat()
 
         conn = get_db()
-        c = conn.cursor()
-        c.execute("""
-            INSERT INTO signals
+        result = conn.run(
+            """INSERT INTO signals
             (pair,timeframe,direction,entry,sl,tp,rr,risk,category,grade,status,fired_at)
-            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,'Pending',%s) RETURNING id
-        """, (pair, timeframe, direction, entry, sl, tp, rr,
-              cfg["risk"], cfg["category"], cfg["grade"], now))
-        signal_id = c.fetchone()[0]
-        conn.commit()
+            VALUES (:pair,:tf,:dir,:entry,:sl,:tp,:rr,:risk,:cat,:grade,'Pending',:now) RETURNING id""",
+            pair=pair, tf=timeframe, dir=direction, entry=entry,
+            sl=sl, tp=tp, rr=rr, risk=cfg["risk"],
+            cat=cfg["category"], grade=cfg["grade"], now=now
+        )
+        signal_id = result[0][0]
         conn.close()
 
         is_jpy   = "JPY" in pair
@@ -273,10 +278,8 @@ def update_signal(signal_id, status):
     if status not in ["TP Hit", "SL Hit", "Expired", "Pending"]:
         return jsonify({"error": "Invalid status"}), 400
     conn = get_db()
-    c = conn.cursor()
-    c.execute("UPDATE signals SET status=%s, closed_at=%s WHERE id=%s",
-              (status, datetime.now(timezone.utc).isoformat(), signal_id))
-    conn.commit()
+    conn.run("UPDATE signals SET status=:s, closed_at=:c WHERE id=:i",
+             s=status, c=datetime.now(timezone.utc).isoformat(), i=signal_id)
     conn.close()
     emoji = "✅" if status == "TP Hit" else "❌" if status == "SL Hit" else "⏰"
     send_telegram("{} Signal #{} — <b>{}</b>".format(emoji, signal_id, status))
@@ -418,17 +421,18 @@ document.getElementById('hd').textContent=new Date().toLocaleDateString('en-GB',
 @app.route("/")
 def dashboard():
     conn = get_db()
-    cur  = conn.cursor(cursor_factory=RealDictCursor)
-    cur.execute("SELECT * FROM signals ORDER BY id DESC")
-    signals = cur.fetchall()
-    cur.execute("""
+    rows = conn.run("SELECT * FROM signals ORDER BY id DESC")
+    cols = [c['name'] for c in conn.columns]
+    signals = [dict(zip(cols, r)) for r in rows]
+    prows = conn.run("""
         SELECT pair, timeframe, category, risk,
                COUNT(*) as total,
                SUM(CASE WHEN status='TP Hit' THEN 1 ELSE 0 END) as tp,
                SUM(CASE WHEN status='SL Hit' THEN 1 ELSE 0 END) as sl
         FROM signals GROUP BY pair, timeframe, category, risk ORDER BY total DESC
     """)
-    pair_stats = cur.fetchall()
+    pcols = [c['name'] for c in conn.columns]
+    pair_stats = [dict(zip(pcols, r)) for r in prows]
     conn.close()
     total   = len(signals)
     tp      = sum(1 for s in signals if s["status"] == "TP Hit")
