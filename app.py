@@ -89,10 +89,15 @@ def init_db():
             category  TEXT,
             grade     TEXT,
             status    TEXT DEFAULT 'Pending',
+            filled    BOOLEAN DEFAULT FALSE,
             fired_at  TEXT,
             closed_at TEXT
         )
     """)
+    try:
+        conn.run("ALTER TABLE signals ADD COLUMN IF NOT EXISTS filled BOOLEAN DEFAULT FALSE")
+    except Exception:
+        pass
     conn.close()
 
 # ═══════════════════════════════════════════════════════════
@@ -198,16 +203,36 @@ def check_pending_signals():
                     price = prices.get(s["pair"].upper())
                     if price is None:
                         continue
-                    if s["direction"] == "BUY":
-                        if price >= s["tp"]:
-                            update_signal_auto(s["id"], "TP Hit", s["pair"], s["direction"], price, s["tp"], s["sl"])
-                        elif price <= s["sl"]:
-                            update_signal_auto(s["id"], "SL Hit", s["pair"], s["direction"], price, s["tp"], s["sl"])
-                    elif s["direction"] == "SELL":
-                        if price <= s["tp"]:
-                            update_signal_auto(s["id"], "TP Hit", s["pair"], s["direction"], price, s["tp"], s["sl"])
-                        elif price >= s["sl"]:
-                            update_signal_auto(s["id"], "SL Hit", s["pair"], s["direction"], price, s["tp"], s["sl"])
+
+                    filled = s.get("filled", False)
+
+                    # Step 1 — check if entry has been filled first
+                    if not filled:
+                        if s["direction"] == "BUY" and price <= s["entry"]:
+                            conn2 = get_db()
+                            conn2.run("UPDATE signals SET filled=TRUE WHERE id=:i", i=s["id"])
+                            conn2.close()
+                            filled = True
+                            print("Signal #{} FILLED at {}".format(s["id"], price))
+                        elif s["direction"] == "SELL" and price >= s["entry"]:
+                            conn2 = get_db()
+                            conn2.run("UPDATE signals SET filled=TRUE WHERE id=:i", i=s["id"])
+                            conn2.close()
+                            filled = True
+                            print("Signal #{} FILLED at {}".format(s["id"], price))
+
+                    # Step 2 — only check TP/SL if entry was filled
+                    if filled:
+                        if s["direction"] == "BUY":
+                            if price >= s["tp"]:
+                                update_signal_auto(s["id"], "TP Hit", s["pair"], s["direction"], price, s["tp"], s["sl"])
+                            elif price <= s["sl"]:
+                                update_signal_auto(s["id"], "SL Hit", s["pair"], s["direction"], price, s["tp"], s["sl"])
+                        elif s["direction"] == "SELL":
+                            if price <= s["tp"]:
+                                update_signal_auto(s["id"], "TP Hit", s["pair"], s["direction"], price, s["tp"], s["sl"])
+                            elif price >= s["sl"]:
+                                update_signal_auto(s["id"], "SL Hit", s["pair"], s["direction"], price, s["tp"], s["sl"])
                 except Exception as e:
                     print("Signal #{} error: {}".format(s["id"], e))
         except Exception as e:
@@ -389,7 +414,7 @@ tr:hover td{background:#f0faf0}
   <div class="stit">Signal Log</div>
   <div class="tw">
     <table>
-      <thead><tr><th>#</th><th>Pair</th><th>TF</th><th>Dir</th><th>Entry</th><th>SL</th><th>TP</th><th>RR</th><th>Risk</th><th>Cat</th><th>Status</th><th>Time</th><th>Action</th></tr></thead>
+      <thead><tr><th>#</th><th>Pair</th><th>TF</th><th>Dir</th><th>Entry</th><th>SL</th><th>TP</th><th>RR</th><th>Risk</th><th>Cat</th><th>Filled</th><th>Status</th><th>Time</th><th>Action</th></tr></thead>
       <tbody>
         {% if not signals %}<tr><td colspan="13"><div class="empty">📡 No signals yet — waiting for alerts</div></td></tr>{% endif %}
         {% for s in signals %}
@@ -404,6 +429,7 @@ tr:hover td{background:#f0faf0}
           <td>1:{{ s.rr }}</td>
           <td>{{ s.risk }}%</td>
           <td><span class="{{ 't1' if s.category == 'Tier 1' else 't2' if s.category == 'Tier 2' else 'cry' }}">{{ s.category }}</span></td>
+          <td style="font-size:11px">{{ "✅" if s.filled else "⏳" }}</td>
           <td><span class="bdg {{ 'pnd' if s.status == 'Pending' else 'tph' if s.status == 'TP Hit' else 'slh' if s.status == 'SL Hit' else 'exp' }}">{{ s.status }}</span></td>
           <td style="color:#aaa;font-size:11px">{{ s.fired_at[:16].replace("T"," ") if s.fired_at else "" }}</td>
           <td>
