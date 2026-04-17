@@ -53,13 +53,22 @@ SYMBOL_MAP = {
 
 def get_db():
     import urllib.parse
-    url = urllib.parse.urlparse(DATABASE_URL)
+    # Railway provides DATABASE_URL as postgresql://user:pass@host:port/db
+    # or postgres://user:pass@host:port/db
+    db_url = DATABASE_URL.replace('postgres://', 'postgresql://')
+    url = urllib.parse.urlparse(db_url)
+    user = url.username
+    password = url.password
+    host = url.hostname
+    port = url.port or 5432
+    database = url.path.lstrip('/')
+    print('DB connecting: host={} port={} db={} user={}'.format(host, port, database, user))
     conn = pg8000.native.Connection(
-        host=url.hostname,
-        port=url.port or 5432,
-        database=url.path.lstrip('/'),
-        user=url.username,
-        password=url.password,
+        host=host,
+        port=port,
+        database=database,
+        user=user,
+        password=password,
         ssl_context=True
     )
     return conn
@@ -453,10 +462,16 @@ def test():
 # STARTUP
 # ═══════════════════════════════════════════════════════════
 
-init_db()
+try:
+    init_db()
+    print("Database initialized OK")
+except Exception as e:
+    print("DB init error: {}".format(e))
+    print("DATABASE_URL set: {}".format(bool(DATABASE_URL)))
+
 monitor_thread = threading.Thread(target=check_pending_signals, daemon=True)
 monitor_thread.start()
-print("Cmvng Bot started — PostgreSQL connected, monitor running")
+print("Cmvng Bot started — monitor running")
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
