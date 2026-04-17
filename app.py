@@ -362,17 +362,7 @@ def webhook():
 # MANUAL UPDATE
 # ═══════════════════════════════════════════════════════════
 
-@app.route("/update/<int:signal_id>/<status>", methods=["POST"])
-def update_signal(signal_id, status):
-    if status not in ["TP Hit", "SL Hit", "Expired", "Pending"]:
-        return jsonify({"error": "Invalid status"}), 400
-    conn = get_db()
-    conn.run("UPDATE signals SET status=:s, closed_at=:c WHERE id=:i",
-             s=status, c=datetime.now(timezone.utc).isoformat(), i=signal_id)
-    conn.close()
-    emoji = "✅" if status == "TP Hit" else "❌" if status == "SL Hit" else "⏰"
-    send_telegram("{} Signal #{} — <b>{}</b>".format(emoji, signal_id, status))
-    return jsonify({"status": "updated"}), 200
+
 
 # ═══════════════════════════════════════════════════════════
 # DASHBOARD
@@ -422,10 +412,6 @@ tr:hover td{background:#f0faf0}
 .t1{background:#e8f5e9;color:#1b5e20;padding:2px 7px;border-radius:20px;font-size:10px;font-weight:700}
 .t2{background:#fff8e1;color:#e65100;padding:2px 7px;border-radius:20px;font-size:10px;font-weight:700}
 .cry{background:#f3e5f5;color:#6a1b9a;padding:2px 7px;border-radius:20px;font-size:10px;font-weight:700}
-.btn{padding:3px 9px;border-radius:5px;border:1px solid;cursor:pointer;font-size:10px;font-weight:700;margin-right:3px}
-.btp{background:#e8f5e9;color:#2e7d32;border-color:#a5d6a7}
-.bsl{background:#ffebee;color:#c62828;border-color:#ef9a9a}
-.bex{background:#f5f5f5;color:#757575;border-color:#e0e0e0}
 .empty{text-align:center;padding:40px;color:#7ab87a}
 .ref{font-size:11px;color:#a0c8a0;text-align:right;padding:0 32px 16px}
 </style></head><body>
@@ -469,9 +455,9 @@ tr:hover td{background:#f0faf0}
   <div class="stit">Signal Log</div>
   <div class="tw">
     <table>
-      <thead><tr><th>#</th><th>Pair</th><th>TF</th><th>Dir</th><th>Entry</th><th>SL</th><th>TP</th><th>RR</th><th>Risk</th><th>Cat</th><th>Filled</th><th>Status</th><th>Time</th><th>Action</th></tr></thead>
+      <thead><tr><th>#</th><th>Pair</th><th>TF</th><th>Dir</th><th>Entry</th><th>SL</th><th>TP</th><th>RR</th><th>Risk</th><th>Cat</th><th>Filled</th><th>Status</th><th>Time</th></tr></thead>
       <tbody>
-        {% if not signals %}<tr><td colspan="13"><div class="empty">📡 No signals yet — waiting for alerts</div></td></tr>{% endif %}
+        {% if not signals %}<tr><td colspan="12"><div class="empty">📡 No signals yet — waiting for alerts</div></td></tr>{% endif %}
         {% for s in signals %}
         <tr>
           <td style="color:#aaa">{{ s.id }}</td>
@@ -487,13 +473,7 @@ tr:hover td{background:#f0faf0}
           <td style="font-size:11px">{{ "✅" if s.filled else "⏳" }}</td>
           <td><span class="bdg {{ 'pnd' if s.status == 'Pending' else 'tph' if s.status == 'TP Hit' else 'slh' if s.status == 'SL Hit' else 'exp' }}">{{ s.status }}</span></td>
           <td style="color:#aaa;font-size:11px">{{ s.fired_at[:16].replace("T"," ") if s.fired_at else "" }}</td>
-          <td>
-            {% if s.status == "Pending" %}
-            <button class="btn btp" onclick="upd({{ s.id }},'TP Hit')">TP</button>
-            <button class="btn bsl" onclick="upd({{ s.id }},'SL Hit')">SL</button>
-            <button class="btn bex" onclick="upd({{ s.id }},'Expired')">Exp</button>
-            {% endif %}
-          </td>
+
         </tr>
         {% endfor %}
       </tbody>
@@ -502,7 +482,6 @@ tr:hover td{background:#f0faf0}
 </div>
 <div class="ref">Auto-refreshes every 60s &nbsp;·&nbsp; Prices checked every 15 mins &nbsp;·&nbsp; Data stored in PostgreSQL</div>
 <script>
-function upd(id,s){fetch('/update/'+id+'/'+encodeURIComponent(s),{method:'POST'}).then(()=>location.reload())}
 setTimeout(()=>location.reload(),60000);
 document.getElementById('hd').textContent=new Date().toLocaleDateString('en-GB',{day:'numeric',month:'short',year:'numeric'});
 </script>
