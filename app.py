@@ -427,6 +427,40 @@ document.getElementById('hd').textContent=new Date().toLocaleDateString('en-GB',
 </script>
 </body></html>"""
 
+@app.route("/add", methods=["POST"])
+def add_signal():
+    try:
+        data = request.get_json(force=True)
+        if not data:
+            return jsonify({"error": "No data"}), 400
+        pair      = data.get("pair", "").upper()
+        timeframe = data.get("timeframe", "").upper()
+        direction = data.get("direction", "").upper()
+        entry     = float(data.get("entry", 0))
+        sl        = float(data.get("sl", 0))
+        tp        = float(data.get("tp", 0))
+        fired_at  = data.get("fired_at", datetime.now(timezone.utc).isoformat())
+        key       = "{}_{}".format(pair, timeframe)
+        cfg       = PAIRS.get(key, {"category": "Unknown", "risk": 0.1, "grade": "Unrated"})
+        sl_dist   = abs(entry - sl)
+        tp_dist   = abs(tp - entry)
+        rr        = round(tp_dist / sl_dist, 2) if sl_dist > 0 else 0
+        conn = get_db()
+        result = conn.run(
+            """INSERT INTO signals
+            (pair,timeframe,direction,entry,sl,tp,rr,risk,category,grade,status,fired_at)
+            VALUES (:pair,:tf,:dir,:entry,:sl,:tp,:rr,:risk,:cat,:grade,'Pending',:now) RETURNING id""",
+            pair=pair, tf=timeframe, dir=direction, entry=entry,
+            sl=sl, tp=tp, rr=rr, risk=cfg["risk"],
+            cat=cfg["category"], grade=cfg["grade"], now=fired_at
+        )
+        signal_id = result[0][0]
+        conn.close()
+        return jsonify({"status": "ok", "signal_id": signal_id, "message": "Signal added — monitor will check it within 15 mins"}), 200
+    except Exception as e:
+        print("Add signal error: {}".format(e))
+        return jsonify({"error": str(e)}), 500
+
 @app.route("/")
 def dashboard():
     conn = get_db()
