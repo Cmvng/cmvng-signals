@@ -261,22 +261,26 @@ def check_pending_signals():
 
                     filled = s.get("filled", False)
 
-                    # Step 1 — check if entry has been filled first
+                    # Step 1 — check if entry has been filled
                     if not filled:
+                        entry_filled = False
                         if s["direction"] == "BUY" and price <= s["entry"]:
-                            conn2 = get_db()
-                            conn2.run("UPDATE signals SET filled=TRUE WHERE id=:i", i=s["id"])
-                            conn2.close()
-                            filled = True
-                            print("Signal #{} FILLED at {}".format(s["id"], price))
+                            entry_filled = True
                         elif s["direction"] == "SELL" and price >= s["entry"]:
+                            entry_filled = True
+
+                        if entry_filled:
+                            # Mark as filled but DON'T check TP/SL yet
+                            # Wait for next cycle to avoid false SL on same check
                             conn2 = get_db()
                             conn2.run("UPDATE signals SET filled=TRUE WHERE id=:i", i=s["id"])
                             conn2.close()
-                            filled = True
-                            print("Signal #{} FILLED at {}".format(s["id"], price))
+                            print("Signal #{} FILLED at {} — will check TP/SL next cycle".format(s["id"], price))
+                            # Skip TP/SL check this cycle
+                            continue
 
-                    # Step 2 — only check TP/SL if entry was filled
+                    # Step 2 — only check TP/SL if entry was PREVIOUSLY filled
+                    # This ensures at least one cycle gap between fill and TP/SL check
                     if filled:
                         if s["direction"] == "BUY":
                             if price >= s["tp"]:
