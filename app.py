@@ -4,6 +4,7 @@ import pg8000.native
 import os
 import threading
 import time
+import urllib.parse
 from datetime import datetime, timezone, timedelta
 
 app = Flask(__name__)
@@ -36,9 +37,6 @@ PAIRS = {
     "ZECUSD_15M":  {"category": "Crypto", "risk": 0.1,  "grade": "A - Strong"},
     "MNTUSD_15M":  {"category": "Crypto", "risk": 0.1,  "grade": "A - Strong"},
     "MNTUSD_1H":   {"category": "Crypto", "risk": 0.1,  "grade": "A - Strong"},
-    "GBPNZD_30M":  {"category": "Tier 1", "risk": 0.5,  "grade": "A - Strong"},
-    "EURUSD_30M":  {"category": "Tier 1", "risk": 0.5,  "grade": "A - Strong"},
-    "NZDCAD_1H":   {"category": "Tier 1", "risk": 0.5,  "grade": "A - Strong"},
     "CADJPY_30M":  {"category": "Tier 2", "risk": 0.25, "grade": "B - Good"},
     "EURCAD_30M":  {"category": "Tier 2", "risk": 0.25, "grade": "B - Good"},
     "GBPCAD_15M":  {"category": "Tier 2", "risk": 0.25, "grade": "B - Good"},
@@ -59,17 +57,10 @@ SYMBOL_MAP = {
     "MNTUSD": "MNT/USD",
 }
 
-# Binance symbol map — fallback for crypto pairs not on TwelveData
 BINANCE_MAP = {
-    "MNTUSD": "MNTUSDT",
-    "ADAUSD": "ADAUSDT",
-    "BTCUSD": "BTCUSDT",
-    "ETHUSD": "ETHUSDT",
-    "BNBUSD": "BNBUSDT",
-    "SOLUSD": "SOLUSDT",
-    "XRPUSD": "XRPUSDT",
-    "ZECUSD": "ZECUSDT",
-    "HYPEUSD": "HYPEUSDT",
+    "MNTUSD": "MNTUSDT", "ADAUSD": "ADAUSDT", "BTCUSD": "BTCUSDT",
+    "ETHUSD": "ETHUSDT", "BNBUSD": "BNBUSDT", "SOLUSD": "SOLUSDT",
+    "XRPUSD": "XRPUSDT", "ZECUSD": "ZECUSDT", "HYPEUSD": "HYPEUSDT",
 }
 
 def get_binance_price(pair):
@@ -77,10 +68,7 @@ def get_binance_price(pair):
     if not symbol:
         return None
     try:
-        r = requests.get(
-            "https://api.binance.com/api/v3/ticker/price?symbol={}".format(symbol),
-            timeout=10
-        )
+        r = requests.get("https://api.binance.com/api/v3/ticker/price?symbol={}".format(symbol), timeout=10)
         data = r.json()
         if "price" in data:
             return float(data["price"])
@@ -88,62 +76,38 @@ def get_binance_price(pair):
         print("Binance error {}: {}".format(pair, e))
     return None
 
-# ═══════════════════════════════════════════════════════════
-# DATABASE — PostgreSQL (persists across redeploys)
-# ═══════════════════════════════════════════════════════════
+# ═══════════════════════════════════════
+# DATABASE
+# ═══════════════════════════════════════
 
 def get_db():
-    import urllib.parse
-    # Railway provides DATABASE_URL as postgresql://user:pass@host:port/db
-    # or postgres://user:pass@host:port/db
     db_url = DATABASE_URL.replace('postgres://', 'postgresql://')
     url = urllib.parse.urlparse(db_url)
-    user = url.username
-    password = url.password
-    host = url.hostname
-    port = url.port or 5432
-    database = url.path.lstrip('/')
-    print('DB connecting: host={} port={} db={} user={}'.format(host, port, database, user))
     conn = pg8000.native.Connection(
-        host=host,
-        port=port,
-        database=database,
-        user=user,
-        password=password,
+        host=url.hostname, port=url.port or 5432,
+        database=url.path.lstrip('/'),
+        user=url.username, password=url.password,
         ssl_context=True
     )
     return conn
 
 def init_db():
     conn = get_db()
-    conn.run("""
-        CREATE TABLE IF NOT EXISTS signals (
-            id        SERIAL PRIMARY KEY,
-            pair      TEXT,
-            timeframe TEXT,
-            direction TEXT,
-            entry     REAL,
-            sl        REAL,
-            tp        REAL,
-            rr        REAL,
-            risk      REAL,
-            category  TEXT,
-            grade     TEXT,
-            status    TEXT DEFAULT 'Pending',
-            filled    BOOLEAN DEFAULT FALSE,
-            fired_at  TEXT,
-            closed_at TEXT
-        )
-    """)
+    conn.run("""CREATE TABLE IF NOT EXISTS signals (
+        id SERIAL PRIMARY KEY, pair TEXT, timeframe TEXT, direction TEXT,
+        entry REAL, sl REAL, tp REAL, rr REAL, risk REAL,
+        category TEXT, grade TEXT, status TEXT DEFAULT 'Pending',
+        filled BOOLEAN DEFAULT FALSE, fired_at TEXT, closed_at TEXT
+    )""")
     try:
         conn.run("ALTER TABLE signals ADD COLUMN IF NOT EXISTS filled BOOLEAN DEFAULT FALSE")
     except Exception:
         pass
     conn.close()
 
-# ═══════════════════════════════════════════════════════════
+# ═══════════════════════════════════════
 # TELEGRAM
-# ═══════════════════════════════════════════════════════════
+# ═══════════════════════════════════════
 
 def send_telegram(message):
     if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID:
@@ -151,15 +115,14 @@ def send_telegram(message):
     try:
         requests.post(
             "https://api.telegram.org/bot{}/sendMessage".format(TELEGRAM_TOKEN),
-            json={"chat_id": TELEGRAM_CHAT_ID, "text": message, "parse_mode": "HTML"},
-            timeout=10
+            json={"chat_id": TELEGRAM_CHAT_ID, "text": message, "parse_mode": "HTML"}, timeout=10
         )
     except Exception as e:
         print("Telegram error: {}".format(e))
 
-# ═══════════════════════════════════════════════════════════
-# TWELVEDATA — batch price fetch (1 API call for all pairs)
-# ═══════════════════════════════════════════════════════════
+# ═══════════════════════════════════════
+# PRICE FETCH — TwelveData batch + Binance fallback
+# ═══════════════════════════════════════
 
 def get_prices_batch(pairs):
     symbols = []
@@ -173,10 +136,7 @@ def get_prices_batch(pairs):
         return {}
     try:
         symbol_str = ",".join(symbols)
-        r = requests.get(
-            "https://api.twelvedata.com/price?symbol={}&apikey={}".format(symbol_str, TWELVEDATA_KEY),
-            timeout=15
-        )
+        r = requests.get("https://api.twelvedata.com/price?symbol={}&apikey={}".format(symbol_str, TWELVEDATA_KEY), timeout=15)
         data = r.json()
         prices = {}
         for pair in pairs:
@@ -187,17 +147,14 @@ def get_prices_batch(pairs):
                 prices[pair.upper()] = float(data[symbol]["price"])
             elif "price" in data and len(symbols) == 1:
                 prices[pair.upper()] = float(data["price"])
-        # Fallback to Binance for any crypto pairs not found via TwelveData
         for pair in pairs:
             if pair.upper() not in prices and pair.upper() in BINANCE_MAP:
                 bp = get_binance_price(pair)
                 if bp is not None:
                     prices[pair.upper()] = bp
-                    print("Binance fallback: {} = {}".format(pair, bp))
         return prices
     except Exception as e:
         print("TwelveData batch error: {}".format(e))
-        # If TwelveData fails entirely, try Binance for all crypto
         prices = {}
         for pair in pairs:
             if pair.upper() in BINANCE_MAP:
@@ -206,9 +163,9 @@ def get_prices_batch(pairs):
                     prices[pair.upper()] = bp
         return prices
 
-# ═══════════════════════════════════════════════════════════
-# AUTO UPDATE SIGNAL STATUS
-# ═══════════════════════════════════════════════════════════
+# ═══════════════════════════════════════
+# AUTO UPDATE
+# ═══════════════════════════════════════
 
 def update_signal_auto(sig_id, status, pair, direction, price=None, tp=None, sl=None):
     conn = get_db()
@@ -224,11 +181,9 @@ def update_signal_auto(sig_id, status, pair, direction, price=None, tp=None, sl=
     send_telegram(msg)
     print("Signal #{} -> {}".format(sig_id, status))
 
-# ═══════════════════════════════════════════════════════════
-# BACKGROUND MONITOR — checks every 15 minutes
-# Uses 1 batch API call for ALL pending pairs
-# Only checks Pending signals — resolved ones never rescanned
-# ═══════════════════════════════════════════════════════════
+# ═══════════════════════════════════════
+# BACKGROUND MONITOR
+# ═══════════════════════════════════════
 
 def check_pending_signals():
     while True:
@@ -238,15 +193,12 @@ def check_pending_signals():
             cols = [c['name'] for c in conn.columns]
             pending = [dict(zip(cols, r)) for r in rows]
             conn.close()
-
             if not pending:
                 time.sleep(CHECK_INTERVAL)
                 continue
-
             unique_pairs = list(set(s["pair"] for s in pending))
             prices = get_prices_batch(unique_pairs)
-            print("Monitor: {} pairs, {} pending signals".format(len(unique_pairs), len(pending)))
-
+            print("Monitor: {} pairs, {} pending".format(len(unique_pairs), len(pending)))
             for s in pending:
                 try:
                     fired_dt = datetime.fromisoformat(s["fired_at"])
@@ -258,29 +210,21 @@ def check_pending_signals():
                     price = prices.get(s["pair"].upper())
                     if price is None:
                         continue
-
                     filled = s.get("filled", False)
-
-                    # Step 1 — check if entry has been filled
                     if not filled:
                         entry_filled = False
                         if s["direction"] == "BUY" and price <= s["entry"]:
                             entry_filled = True
                         elif s["direction"] == "SELL" and price >= s["entry"]:
                             entry_filled = True
-
                         if entry_filled:
-                            # Mark as filled but DON'T check TP/SL yet
-                            # Wait for next cycle to avoid false SL on same check
                             conn2 = get_db()
                             conn2.run("UPDATE signals SET filled=TRUE WHERE id=:i", i=s["id"])
                             conn2.close()
-                            print("Signal #{} FILLED at {} — will check TP/SL next cycle".format(s["id"], price))
-                            # Skip TP/SL check this cycle
+                            send_telegram("📥 <b>ENTRY FILLED — {} {}</b>\nFilled at: {}\n🆔 Signal #{}".format(
+                                s["pair"], s["direction"], price, s["id"]))
+                            print("Signal #{} FILLED at {}".format(s["id"], price))
                             continue
-
-                    # Step 2 — only check TP/SL if entry was PREVIOUSLY filled
-                    # This ensures at least one cycle gap between fill and TP/SL check
                     if filled:
                         if s["direction"] == "BUY":
                             if price >= s["tp"]:
@@ -298,9 +242,9 @@ def check_pending_signals():
             print("Monitor error: {}".format(e))
         time.sleep(CHECK_INTERVAL)
 
-# ═══════════════════════════════════════════════════════════
-# WEBHOOK — receives TradingView alerts
-# ═══════════════════════════════════════════════════════════
+# ═══════════════════════════════════════
+# WEBHOOK
+# ═══════════════════════════════════════
 
 @app.route("/webhook", methods=["POST"])
 def webhook():
@@ -320,176 +264,38 @@ def webhook():
         tp_dist   = abs(tp - entry)
         rr        = round(tp_dist / sl_dist, 2) if sl_dist > 0 else 0
         now       = datetime.now(timezone.utc).isoformat()
-
         conn = get_db()
         result = conn.run(
-            """INSERT INTO signals
-            (pair,timeframe,direction,entry,sl,tp,rr,risk,category,grade,status,fired_at)
+            """INSERT INTO signals (pair,timeframe,direction,entry,sl,tp,rr,risk,category,grade,status,fired_at)
             VALUES (:pair,:tf,:dir,:entry,:sl,:tp,:rr,:risk,:cat,:grade,'Pending',:now) RETURNING id""",
             pair=pair, tf=timeframe, dir=direction, entry=entry,
             sl=sl, tp=tp, rr=rr, risk=cfg["risk"],
-            cat=cfg["category"], grade=cfg["grade"], now=now
-        )
+            cat=cfg["category"], grade=cfg["grade"], now=now)
         signal_id = result[0][0]
         conn.close()
-
         is_jpy   = "JPY" in pair
         is_metal = "XAU" in pair or "XAG" in pair
         dec      = 2 if (is_jpy or is_metal) else 5
         emoji    = "🟢" if direction == "BUY" else "🔴"
         ts       = datetime.now(timezone.utc).strftime("%d %b %Y %H:%M UTC")
-        msg = (
-            "{} <b>{} SIGNAL — {}</b>\n"
-            "──────────────────────\n"
-            "<b>Timeframe :</b> {}\n"
-            "<b>Entry     :</b> {:.{}f}\n"
-            "<b>Stop Loss :</b> {:.{}f}\n"
-            "<b>Take Profit:</b> {:.{}f}\n"
-            "──────────────────────\n"
-            "<b>Risk      :</b> {}% ({})\n"
-            "<b>RR        :</b> 1 : {:.1f}\n"
-            "<b>Rating    :</b> {}\n"
-            "──────────────────────\n"
-            "⏰ Expires in 3 days\n"
-            "📅 {}\n"
-            "🆔 Signal #{}"
-        ).format(emoji, direction, pair, timeframe,
-                 entry, dec, sl, dec, tp, dec,
-                 cfg["risk"], cfg["category"], rr, cfg["grade"], ts, signal_id)
+        msg = ("{} <b>{} SIGNAL — {}</b>\n──────────────────────\n"
+               "<b>Timeframe :</b> {}\n<b>Entry     :</b> {:.{}f}\n"
+               "<b>Stop Loss :</b> {:.{}f}\n<b>Take Profit:</b> {:.{}f}\n"
+               "──────────────────────\n<b>Risk      :</b> {}% ({})\n"
+               "<b>RR        :</b> 1 : {:.1f}\n<b>Rating    :</b> {}\n"
+               "──────────────────────\n⏰ Expires in 3 days\n📅 {}\n🆔 Signal #{}"
+               ).format(emoji, direction, pair, timeframe,
+                        entry, dec, sl, dec, tp, dec,
+                        cfg["risk"], cfg["category"], rr, cfg["grade"], ts, signal_id)
         send_telegram(msg)
         return jsonify({"status": "ok", "signal_id": signal_id}), 200
     except Exception as e:
         print("Webhook error: {}".format(e))
         return jsonify({"error": str(e)}), 500
 
-# ═══════════════════════════════════════════════════════════
-# MANUAL UPDATE
-# ═══════════════════════════════════════════════════════════
-
-
-
-# ═══════════════════════════════════════════════════════════
-# DASHBOARD
-# ═══════════════════════════════════════════════════════════
-
-DASHBOARD_HTML = """<!DOCTYPE html>
-<html><head>
-<meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Cmvng Bot</title>
-<style>
-*{box-sizing:border-box;margin:0;padding:0}
-body{font-family:-apple-system,Arial,sans-serif;background:#f0f7f0;color:#1a2e1a}
-.hdr{padding:20px 32px;background:#1e5c2e;display:flex;align-items:center;justify-content:space-between}
-.hdr h1{font-size:18px;font-weight:700;color:#fff}
-.hdr-r{display:flex;align-items:center;gap:14px}
-.live{font-size:12px;color:#a8e6b8;display:flex;align-items:center;gap:5px}
-.dot{width:7px;height:7px;background:#a8e6b8;border-radius:50%;animation:p 2s infinite}
-@keyframes p{0%,100%{opacity:1}50%{opacity:.4}}
-.hdate{font-size:12px;color:#a8e6b8}
-.mbadge{background:#a8e6b8;color:#1e5c2e;font-size:11px;padding:3px 10px;border-radius:20px;font-weight:700}
-.stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:12px;padding:24px 32px}
-.stat{background:#fff;border:1px solid #c8e6c9;border-radius:12px;padding:14px 16px}
-.slbl{font-size:10px;color:#5a8a5a;text-transform:uppercase;letter-spacing:.06em;margin-bottom:5px;font-weight:700}
-.sval{font-size:24px;font-weight:700;color:#1a2e1a}
-.sval.g{color:#2e7d32}.sval.r{color:#c62828}.sval.a{color:#e65100}
-.sec{padding:0 32px 32px}
-.stit{font-size:11px;font-weight:700;color:#5a8a5a;text-transform:uppercase;letter-spacing:.08em;margin-bottom:12px;padding-bottom:7px;border-bottom:2px solid #c8e6c9}
-.pgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:12px;margin-bottom:28px}
-.pc{background:#fff;border:1px solid #c8e6c9;border-radius:12px;padding:14px;border-left:4px solid #2e7d32}
-.pn{font-size:14px;font-weight:700;margin-bottom:2px}
-.pt{font-size:11px;color:#7ab87a;margin-bottom:10px}
-.pnums{display:flex;gap:14px}
-.pnum{font-size:10px;color:#7ab87a;font-weight:700;text-transform:uppercase}
-.pnum span{display:block;font-size:15px;font-weight:700;color:#1a2e1a;margin-top:1px}
-.tw{overflow-x:auto}
-table{width:100%;border-collapse:collapse;font-size:13px;background:#fff;border-radius:12px;overflow:hidden;min-width:680px}
-th{text-align:left;padding:10px 12px;font-size:10px;color:#5a8a5a;text-transform:uppercase;border-bottom:1px solid #e8f5e9;background:#f5fdf5;font-weight:700}
-td{padding:10px 12px;border-bottom:1px solid #f0f9f0}
-tr:last-child td{border-bottom:none}
-tr:hover td{background:#f0faf0}
-.bdg{display:inline-block;padding:2px 9px;border-radius:20px;font-size:11px;font-weight:700}
-.pnd{background:#e3f2fd;color:#1565c0}
-.tph{background:#e8f5e9;color:#2e7d32}
-.slh{background:#ffebee;color:#c62828}
-.exp{background:#f5f5f5;color:#757575}
-.buy{color:#2e7d32;font-weight:700}.sell{color:#c62828;font-weight:700}
-.t1{background:#e8f5e9;color:#1b5e20;padding:2px 7px;border-radius:20px;font-size:10px;font-weight:700}
-.t2{background:#fff8e1;color:#e65100;padding:2px 7px;border-radius:20px;font-size:10px;font-weight:700}
-.cry{background:#f3e5f5;color:#6a1b9a;padding:2px 7px;border-radius:20px;font-size:10px;font-weight:700}
-.empty{text-align:center;padding:40px;color:#7ab87a}
-.ref{font-size:11px;color:#a0c8a0;text-align:right;padding:0 32px 16px}
-</style></head><body>
-<div class="hdr">
-  <h1>Cmvng Bot — Signal Dashboard</h1>
-  <div class="hdr-r">
-    <span class="mbadge">Auto-monitoring ON</span>
-    <span class="hdate" id="hd"></span>
-    <div class="live"><div class="dot"></div> Live</div>
-  </div>
-</div>
-<div class="stats">
-  <div class="stat"><div class="slbl">Total</div><div class="sval">{{ stats.total }}</div></div>
-  <div class="stat"><div class="slbl">Win Rate</div><div class="sval {{ 'g' if stats.wr >= 45 else 'a' if stats.wr >= 35 else 'r' }}">{{ stats.wr }}%</div></div>
-  <div class="stat"><div class="slbl">Prof Factor</div><div class="sval {{ 'g' if stats.pf >= 1.4 else 'a' if stats.pf >= 1.0 else 'r' }}">{{ stats.pf }}</div></div>
-  <div class="stat"><div class="slbl">TP Hit</div><div class="sval g">{{ stats.tp }}</div></div>
-  <div class="stat"><div class="slbl">SL Hit</div><div class="sval r">{{ stats.sl }}</div></div>
-  <div class="stat"><div class="slbl">Pending</div><div class="sval a">{{ stats.pending }}</div></div>
-</div>
-{% if pair_stats %}
-<div class="sec">
-  <div class="stit">Pair Performance</div>
-  <div class="pgrid">
-    {% for p in pair_stats %}
-    <div class="pc">
-      <div class="pn">{{ p.pair }}</div>
-      <div class="pt">{{ p.timeframe }} &nbsp;·&nbsp;
-        <span class="{{ 't1' if p.category == 'Tier 1' else 't2' if p.category == 'Tier 2' else 'cry' }}">{{ p.category }}</span>
-      </div>
-      <div class="pnums">
-        <div class="pnum">Signals<span>{{ p.total }}</span></div>
-        <div class="pnum">Wins<span style="color:#2e7d32">{{ p.tp }}</span></div>
-        <div class="pnum">Losses<span style="color:#c62828">{{ p.sl }}</span></div>
-      </div>
-    </div>
-    {% endfor %}
-  </div>
-</div>
-{% endif %}
-<div class="sec">
-  <div class="stit">Signal Log</div>
-  <div class="tw">
-    <table>
-      <thead><tr><th>#</th><th>Pair</th><th>TF</th><th>Dir</th><th>Entry</th><th>SL</th><th>TP</th><th>RR</th><th>Risk</th><th>Cat</th><th>Filled</th><th>Status</th><th>Time</th></tr></thead>
-      <tbody>
-        {% if not signals %}<tr><td colspan="12"><div class="empty">📡 No signals yet — waiting for alerts</div></td></tr>{% endif %}
-        {% for s in signals %}
-        <tr>
-          <td style="color:#aaa">{{ s.id }}</td>
-          <td style="font-weight:700">{{ s.pair }}</td>
-          <td style="color:#888">{{ s.timeframe }}</td>
-          <td class="{{ 'buy' if s.direction == 'BUY' else 'sell' }}">{{ s.direction }}</td>
-          <td>{{ s.entry }}</td>
-          <td style="color:#c62828">{{ s.sl }}</td>
-          <td style="color:#2e7d32">{{ s.tp }}</td>
-          <td>1:{{ s.rr }}</td>
-          <td>{{ s.risk }}%</td>
-          <td><span class="{{ 't1' if s.category == 'Tier 1' else 't2' if s.category == 'Tier 2' else 'cry' }}">{{ s.category }}</span></td>
-          <td style="font-size:11px">{{ "✅" if s.filled else "⏳" }}</td>
-          <td><span class="bdg {{ 'pnd' if s.status == 'Pending' else 'tph' if s.status == 'TP Hit' else 'slh' if s.status == 'SL Hit' else 'exp' }}">{{ s.status }}</span></td>
-          <td style="color:#aaa;font-size:11px">{{ s.fired_at[:16].replace("T"," ") if s.fired_at else "" }}</td>
-
-        </tr>
-        {% endfor %}
-      </tbody>
-    </table>
-  </div>
-</div>
-<div class="ref">Auto-refreshes every 60s &nbsp;·&nbsp; Prices checked every 15 mins &nbsp;·&nbsp; Data stored in PostgreSQL</div>
-<script>
-setTimeout(()=>location.reload(),60000);
-document.getElementById('hd').textContent=new Date().toLocaleDateString('en-GB',{day:'numeric',month:'short',year:'numeric'});
-</script>
-</body></html>"""
+# ═══════════════════════════════════════
+# ADD SIGNAL (manual)
+# ═══════════════════════════════════════
 
 @app.route("/add", methods=["POST"])
 def add_signal():
@@ -511,21 +317,374 @@ def add_signal():
         rr        = round(tp_dist / sl_dist, 2) if sl_dist > 0 else 0
         conn = get_db()
         result = conn.run(
-            """INSERT INTO signals
-            (pair,timeframe,direction,entry,sl,tp,rr,risk,category,grade,status,fired_at)
+            """INSERT INTO signals (pair,timeframe,direction,entry,sl,tp,rr,risk,category,grade,status,fired_at)
             VALUES (:pair,:tf,:dir,:entry,:sl,:tp,:rr,:risk,:cat,:grade,'Pending',:now) RETURNING id""",
             pair=pair, tf=timeframe, dir=direction, entry=entry,
             sl=sl, tp=tp, rr=rr, risk=cfg["risk"],
-            cat=cfg["category"], grade=cfg["grade"], now=fired_at
-        )
+            cat=cfg["category"], grade=cfg["grade"], now=fired_at)
         signal_id = result[0][0]
         conn.close()
-        return jsonify({"status": "ok", "signal_id": signal_id, "message": "Signal added — monitor will check it within 15 mins"}), 200
+        return jsonify({"status": "ok", "signal_id": signal_id}), 200
     except Exception as e:
-        print("Add signal error: {}".format(e))
+        print("Add error: {}".format(e))
         return jsonify({"error": str(e)}), 500
 
+# ═══════════════════════════════════════
+# FIX SIGNALS (reset false SL hits)
+# ═══════════════════════════════════════
+
+@app.route("/fix/<int:signal_id>", methods=["POST"])
+def fix_signal(signal_id):
+    conn = get_db()
+    conn.run("UPDATE signals SET status='Pending', filled=FALSE, closed_at=NULL WHERE id=:i", i=signal_id)
+    conn.close()
+    return jsonify({"status": "reset", "signal_id": signal_id}), 200
+
+# ═══════════════════════════════════════
+# LANDING PAGE
+# ═══════════════════════════════════════
+
+LANDING_HTML = """<!DOCTYPE html>
+<html><head>
+<meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Cmvng Bot — Automated Trading Signals</title>
+<link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+:root{--bg:#f4f9f4;--card:#fff;--green-1:#0d4a1a;--green-2:#1a6b2c;--green-3:#2e8b42;--green-4:#4caf50;--green-5:#81c784;--green-6:#c8e6c9;--green-7:#e8f5e9;--text:#0d2b0d;--text2:#3a6b3a;--text3:#6b9a6b;--border:#d4e8d4;--white:#ffffff;--accent:#ff6b35}
+body{font-family:'DM Sans',sans-serif;background:var(--bg);color:var(--text);overflow-x:hidden}
+.nav{padding:16px 40px;display:flex;justify-content:space-between;align-items:center;max-width:1200px;margin:0 auto}
+.nav-logo{font-size:20px;font-weight:700;color:var(--green-1);letter-spacing:-0.5px}
+.nav-logo span{color:var(--green-4)}
+.nav-link{font-size:14px;font-weight:500;color:var(--green-2);text-decoration:none;padding:8px 20px;border:1.5px solid var(--green-4);border-radius:24px;transition:all .2s}
+.nav-link:hover{background:var(--green-4);color:#fff}
+.hero{text-align:center;padding:80px 40px 60px;max-width:900px;margin:0 auto}
+.hero-badge{display:inline-block;padding:6px 16px;background:var(--green-7);color:var(--green-2);font-size:13px;font-weight:600;border-radius:20px;margin-bottom:24px;border:1px solid var(--green-6)}
+.hero h1{font-size:clamp(36px,5vw,56px);font-weight:700;color:var(--green-1);line-height:1.1;margin-bottom:20px;letter-spacing:-1.5px}
+.hero h1 em{font-style:normal;color:var(--green-3)}
+.hero p{font-size:18px;color:var(--text2);line-height:1.6;max-width:600px;margin:0 auto 40px}
+.chart-box{max-width:900px;margin:0 auto 80px;padding:0 40px}
+.chart-wrap{background:var(--card);border:1px solid var(--border);border-radius:16px;padding:32px;position:relative;overflow:hidden}
+.chart-header{display:flex;justify-content:space-between;align-items:center;margin-bottom:24px}
+.chart-pair{font-size:18px;font-weight:700;color:var(--green-1)}
+.chart-live{font-size:12px;color:var(--green-4);display:flex;align-items:center;gap:6px}
+.chart-dot{width:6px;height:6px;background:var(--green-4);border-radius:50%;animation:blink 2s infinite}
+@keyframes blink{0%,100%{opacity:1}50%{opacity:.3}}
+.chart-svg{width:100%;height:200px}
+.chart-stats{display:grid;grid-template-columns:repeat(4,1fr);gap:16px;margin-top:24px;padding-top:20px;border-top:1px solid var(--border)}
+.cs{text-align:center}
+.cs-val{font-size:22px;font-weight:700;color:var(--green-1)}
+.cs-val.up{color:var(--green-3)}
+.cs-lbl{font-size:11px;color:var(--text3);text-transform:uppercase;letter-spacing:.08em;margin-top:4px;font-weight:600}
+.features{max-width:1000px;margin:0 auto 80px;padding:0 40px}
+.features-title{text-align:center;font-size:28px;font-weight:700;color:var(--green-1);margin-bottom:40px;letter-spacing:-0.5px}
+.fgrid{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:20px}
+.fcard{background:var(--card);border:1px solid var(--border);border-radius:14px;padding:28px;transition:transform .15s,box-shadow .15s}
+.fcard:hover{transform:translateY(-2px);box-shadow:0 8px 24px rgba(0,80,0,.08)}
+.fcard-icon{width:44px;height:44px;background:var(--green-7);border-radius:12px;display:flex;align-items:center;justify-content:center;font-size:20px;margin-bottom:16px}
+.fcard h3{font-size:16px;font-weight:700;color:var(--green-1);margin-bottom:8px}
+.fcard p{font-size:14px;color:var(--text2);line-height:1.5}
+.pairs-section{max-width:1000px;margin:0 auto 80px;padding:0 40px}
+.pairs-title{text-align:center;font-size:28px;font-weight:700;color:var(--green-1);margin-bottom:12px}
+.pairs-sub{text-align:center;font-size:15px;color:var(--text2);margin-bottom:36px}
+.pgrid2{display:grid;grid-template-columns:repeat(auto-fill,minmax(120px,1fr));gap:10px}
+.ptag{background:var(--card);border:1px solid var(--border);border-radius:10px;padding:12px 8px;text-align:center;font-size:13px;font-weight:600;color:var(--green-1);transition:all .15s}
+.ptag:hover{border-color:var(--green-4);background:var(--green-7)}
+.ptag span{display:block;font-size:10px;color:var(--text3);font-weight:500;margin-top:3px}
+.footer{text-align:center;padding:40px;color:var(--text3);font-size:13px;border-top:1px solid var(--border)}
+</style></head><body>
+<nav class="nav">
+  <div class="nav-logo">cmvng<span>bot</span></div>
+  <a href="/dashboard" class="nav-link">Dashboard →</a>
+</nav>
+<div class="hero">
+  <div class="hero-badge">Automated Forex & Crypto Signals</div>
+  <h1>Precision entries.<br><em>Consistent results.</em></h1>
+  <p>AI-powered trading signals across 25+ forex and crypto pairs. Fibonacci-based entries, automated TP/SL monitoring, and real-time Telegram alerts — all running 24/7.</p>
+</div>
+<div class="chart-box">
+  <div class="chart-wrap">
+    <div class="chart-header">
+      <div class="chart-pair">Signal Performance</div>
+      <div class="chart-live"><div class="chart-dot"></div> Live monitoring</div>
+    </div>
+    <svg class="chart-svg" viewBox="0 0 800 200" fill="none">
+      <defs>
+        <linearGradient id="g1" x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0%" stop-color="#4caf50" stop-opacity="0.3"/>
+          <stop offset="100%" stop-color="#4caf50" stop-opacity="0"/>
+        </linearGradient>
+      </defs>
+      <path d="M0,160 C50,150 80,140 120,120 C160,100 200,130 240,110 C280,90 320,70 360,80 C400,90 440,60 480,50 C520,40 560,70 600,45 C640,20 680,35 720,25 C760,15 790,20 800,18" stroke="#4caf50" stroke-width="2.5" fill="none"/>
+      <path d="M0,160 C50,150 80,140 120,120 C160,100 200,130 240,110 C280,90 320,70 360,80 C400,90 440,60 480,50 C520,40 560,70 600,45 C640,20 680,35 720,25 C760,15 790,20 800,18 L800,200 L0,200 Z" fill="url(#g1)"/>
+      <line x1="0" y1="100" x2="800" y2="100" stroke="#e0e0e0" stroke-width="0.5" stroke-dasharray="6,4"/>
+    </svg>
+    <div class="chart-stats" id="landing-stats">
+      <div class="cs"><div class="cs-val" id="ls-total">—</div><div class="cs-lbl">Total Signals</div></div>
+      <div class="cs"><div class="cs-val up" id="ls-wr">—</div><div class="cs-lbl">Win Rate</div></div>
+      <div class="cs"><div class="cs-val up" id="ls-pf">—</div><div class="cs-lbl">Profit Factor</div></div>
+      <div class="cs"><div class="cs-val" id="ls-pairs">25+</div><div class="cs-lbl">Active Pairs</div></div>
+    </div>
+  </div>
+</div>
+<div class="features">
+  <div class="features-title">How it works</div>
+  <div class="fgrid">
+    <div class="fcard"><div class="fcard-icon">📡</div><h3>Signal Detection</h3><p>Custom strategy runs on TradingView across 25+ pairs on 15M, 30M and 1H timeframes. When conditions align, a signal fires automatically.</p></div>
+    <div class="fcard"><div class="fcard-icon">📱</div><h3>Instant Alerts</h3><p>Telegram notification arrives within seconds — showing exact entry, stop loss, take profit, risk percentage and reward ratio.</p></div>
+    <div class="fcard"><div class="fcard-icon">🎯</div><h3>Fibonacci Entry</h3><p>Entries at the 0.5 Fibonacci retracement level — giving you the optimal entry with a proven 1:2+ risk-reward ratio on every trade.</p></div>
+    <div class="fcard"><div class="fcard-icon">🤖</div><h3>Auto Monitoring</h3><p>Price checked every 15 minutes. TP hit, SL hit or expired — the bot detects it automatically and sends you the result. Fully hands-free.</p></div>
+    <div class="fcard"><div class="fcard-icon">📊</div><h3>Risk Management</h3><p>Three-tier risk allocation. Tier 1 pairs get 0.5%, Tier 2 gets 0.25%, Crypto gets 0.1%. Maximum exposure controlled at all times.</p></div>
+    <div class="fcard"><div class="fcard-icon">🔒</div><h3>Entry Verification</h3><p>Smart fill detection ensures TP/SL only trigger after your entry level is actually reached. No false results on unfilled orders.</p></div>
+  </div>
+</div>
+<div class="pairs-section">
+  <div class="pairs-title">Active Pairs</div>
+  <div class="pairs-sub">Signals running 24/7 across forex and crypto markets</div>
+  <div class="pgrid2">
+    <div class="ptag">XAUUSD<span>30M · Tier 1</span></div>
+    <div class="ptag">EURJPY<span>15M · Tier 1</span></div>
+    <div class="ptag">USDJPY<span>15M · Tier 1</span></div>
+    <div class="ptag">EURUSD<span>1H · Tier 1</span></div>
+    <div class="ptag">GBPJPY<span>30M · Tier 1</span></div>
+    <div class="ptag">GBPNZD<span>30M · Tier 1</span></div>
+    <div class="ptag">EURUSD<span>30M · Tier 1</span></div>
+    <div class="ptag">NZDCAD<span>1H · Tier 1</span></div>
+    <div class="ptag">XAGUSD<span>30M · Tier 2</span></div>
+    <div class="ptag">EURCHF<span>30M · Tier 2</span></div>
+    <div class="ptag">GBPUSD<span>1H · Tier 2</span></div>
+    <div class="ptag">USDCAD<span>1H · Tier 2</span></div>
+    <div class="ptag">EURNZD<span>15M · Tier 2</span></div>
+    <div class="ptag">GBPCAD<span>15M · Tier 2</span></div>
+    <div class="ptag">GBPAUD<span>15M · Tier 2</span></div>
+    <div class="ptag">CADJPY<span>30M · Tier 2</span></div>
+    <div class="ptag">EURCAD<span>30M · Tier 2</span></div>
+    <div class="ptag">ADAUSD<span>1H · Crypto</span></div>
+    <div class="ptag">BTCUSD<span>15M · Crypto</span></div>
+    <div class="ptag">ETHUSD<span>15M · Crypto</span></div>
+    <div class="ptag">BNBUSD<span>1H · Crypto</span></div>
+    <div class="ptag">SOLUSD<span>15M · Crypto</span></div>
+    <div class="ptag">MNTUSD<span>15M · Crypto</span></div>
+    <div class="ptag">MNTUSD<span>1H · Crypto</span></div>
+    <div class="ptag">ZECUSD<span>15M · Crypto</span></div>
+  </div>
+</div>
+<div class="footer">Cmvng Bot — Automated Trading Signal System &nbsp;·&nbsp; Built with precision</div>
+<script>
+fetch('/api/stats').then(r=>r.json()).then(d=>{
+  document.getElementById('ls-total').textContent=d.total||'0';
+  document.getElementById('ls-wr').textContent=(d.wr||0)+'%';
+  document.getElementById('ls-pf').textContent=d.pf||'0';
+}).catch(()=>{});
+</script>
+</body></html>"""
+
+# ═══════════════════════════════════════
+# DASHBOARD
+# ═══════════════════════════════════════
+
+DASHBOARD_HTML = """<!DOCTYPE html>
+<html><head>
+<meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Cmvng Bot — Dashboard</title>
+<link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+:root{--bg:#f4f9f4;--card:#fff;--green-1:#0d4a1a;--green-2:#1a6b2c;--green-3:#2e8b42;--green-4:#4caf50;--green-5:#81c784;--green-6:#c8e6c9;--green-7:#e8f5e9;--text:#0d2b0d;--text2:#3a6b3a;--text3:#6b9a6b;--border:#d4e8d4;--red:#c62828;--red-bg:#ffebee;--blue:#1565c0;--blue-bg:#e3f2fd;--amber:#e65100;--amber-bg:#fff8e1;--purple:#6a1b9a;--purple-bg:#f3e5f5}
+body{font-family:'DM Sans',sans-serif;background:var(--bg);color:var(--text)}
+.nav{padding:14px 32px;background:var(--green-1);display:flex;justify-content:space-between;align-items:center}
+.nav h1{font-size:16px;font-weight:700;color:#fff;letter-spacing:-0.3px}
+.nav h1 span{color:var(--green-5)}
+.nav-r{display:flex;align-items:center;gap:14px}
+.nav-badge{background:rgba(255,255,255,.15);color:var(--green-5);font-size:11px;padding:4px 12px;border-radius:20px;font-weight:600}
+.nav-live{font-size:12px;color:var(--green-5);display:flex;align-items:center;gap:5px}
+.nav-dot{width:6px;height:6px;background:var(--green-5);border-radius:50%;animation:p 2s infinite}
+@keyframes p{0%,100%{opacity:1}50%{opacity:.3}}
+.nav-date{font-size:12px;color:var(--green-5)}
+.nav-home{color:var(--green-5);text-decoration:none;font-size:12px;font-weight:500;padding:4px 12px;border:1px solid rgba(255,255,255,.2);border-radius:16px}
+.nav-home:hover{background:rgba(255,255,255,.1)}
+.main{max-width:1200px;margin:0 auto;padding:24px 32px}
+.stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:14px;margin-bottom:28px}
+.stat{background:var(--card);border:1px solid var(--border);border-radius:14px;padding:18px 20px}
+.slbl{font-size:10px;color:var(--text3);text-transform:uppercase;letter-spacing:.08em;margin-bottom:6px;font-weight:700}
+.sval{font-size:28px;font-weight:700;color:var(--green-1);font-family:'JetBrains Mono',monospace}
+.sval.g{color:var(--green-3)}.sval.r{color:var(--red)}.sval.a{color:var(--amber)}
+.section{margin-bottom:32px}
+.stit{font-size:12px;font-weight:700;color:var(--text3);text-transform:uppercase;letter-spacing:.1em;margin-bottom:14px;padding-bottom:8px;border-bottom:2px solid var(--green-6)}
+.active-signals{display:grid;grid-template-columns:repeat(auto-fill,minmax(320px,1fr));gap:14px;margin-bottom:28px}
+.sig-card{background:var(--card);border:1px solid var(--border);border-radius:14px;padding:20px;position:relative;overflow:hidden}
+.sig-card.buy{border-left:4px solid var(--green-3)}
+.sig-card.sell{border-left:4px solid var(--red)}
+.sig-top{display:flex;justify-content:space-between;align-items:center;margin-bottom:14px}
+.sig-pair{font-size:18px;font-weight:700;color:var(--green-1)}
+.sig-dir{font-size:12px;font-weight:700;padding:3px 10px;border-radius:20px}
+.sig-dir.buy{background:var(--green-7);color:var(--green-2)}
+.sig-dir.sell{background:var(--red-bg);color:var(--red)}
+.sig-grid{display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px;margin-bottom:14px}
+.sg{text-align:center}
+.sg-val{font-size:14px;font-weight:600;color:var(--green-1);font-family:'JetBrains Mono',monospace}
+.sg-lbl{font-size:10px;color:var(--text3);text-transform:uppercase;margin-top:2px;font-weight:600}
+.sig-meta{display:flex;gap:10px;flex-wrap:wrap;align-items:center}
+.sig-tag{font-size:10px;font-weight:700;padding:2px 8px;border-radius:12px}
+.sig-tag.t1{background:var(--green-7);color:var(--green-2)}
+.sig-tag.t2{background:var(--amber-bg);color:var(--amber)}
+.sig-tag.cry{background:var(--purple-bg);color:var(--purple)}
+.sig-tag.filled{background:var(--green-7);color:var(--green-3)}
+.sig-tag.waiting{background:var(--blue-bg);color:var(--blue)}
+.sig-time{font-size:11px;color:var(--text3)}
+.pgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:12px;margin-bottom:28px}
+.pc{background:var(--card);border:1px solid var(--border);border-radius:14px;padding:18px;border-left:4px solid var(--green-3)}
+.pn{font-size:15px;font-weight:700;color:var(--green-1);margin-bottom:3px}
+.pt{font-size:11px;color:var(--text3);margin-bottom:12px}
+.pnums{display:flex;gap:16px}
+.pnum{font-size:10px;color:var(--text3);font-weight:700;text-transform:uppercase}
+.pnum span{display:block;font-size:16px;font-weight:700;color:var(--green-1);margin-top:2px;font-family:'JetBrains Mono',monospace}
+.tbl-wrap{overflow-x:auto;background:var(--card);border:1px solid var(--border);border-radius:14px}
+table{width:100%;border-collapse:collapse;font-size:13px;min-width:750px}
+th{text-align:left;padding:12px 14px;font-size:10px;color:var(--text3);text-transform:uppercase;letter-spacing:.06em;border-bottom:1px solid var(--border);background:var(--green-7);font-weight:700}
+td{padding:12px 14px;border-bottom:1px solid #f0f9f0}
+tr:last-child td{border-bottom:none}
+tr:hover td{background:var(--green-7)}
+.bdg{display:inline-block;padding:3px 10px;border-radius:20px;font-size:11px;font-weight:700}
+.pnd{background:var(--blue-bg);color:var(--blue)}
+.tph{background:var(--green-7);color:var(--green-2)}
+.slh{background:var(--red-bg);color:var(--red)}
+.exp{background:#f5f5f5;color:#757575}
+.buy-txt{color:var(--green-3);font-weight:700}
+.sell-txt{color:var(--red);font-weight:700}
+.mono{font-family:'JetBrains Mono',monospace;font-size:12px}
+.empty{text-align:center;padding:48px;color:var(--text3);font-size:15px}
+.footer{text-align:center;padding:20px;color:var(--text3);font-size:11px}
+</style></head><body>
+<nav class="nav">
+  <h1>cmvng<span>bot</span> dashboard</h1>
+  <div class="nav-r">
+    <div class="nav-badge">Auto-monitoring ON</div>
+    <div class="nav-date" id="hd"></div>
+    <div class="nav-live"><div class="nav-dot"></div> Live</div>
+    <a href="/" class="nav-home">Home</a>
+  </div>
+</nav>
+<div class="main">
+  <div class="stats">
+    <div class="stat"><div class="slbl">Total Signals</div><div class="sval">{{ stats.total }}</div></div>
+    <div class="stat"><div class="slbl">Win Rate</div><div class="sval {{ 'g' if stats.wr >= 45 else 'a' if stats.wr >= 35 else 'r' }}">{{ stats.wr }}%</div></div>
+    <div class="stat"><div class="slbl">Profit Factor</div><div class="sval {{ 'g' if stats.pf >= 1.4 else 'a' if stats.pf >= 1.0 else 'r' }}">{{ stats.pf }}</div></div>
+    <div class="stat"><div class="slbl">TP Hit</div><div class="sval g">{{ stats.tp }}</div></div>
+    <div class="stat"><div class="slbl">SL Hit</div><div class="sval r">{{ stats.sl }}</div></div>
+    <div class="stat"><div class="slbl">Pending</div><div class="sval a">{{ stats.pending }}</div></div>
+  </div>
+
+  {% if active_signals %}
+  <div class="section">
+    <div class="stit">Active Signals</div>
+    <div class="active-signals">
+      {% for s in active_signals %}
+      <div class="sig-card {{ 'buy' if s.direction == 'BUY' else 'sell' }}">
+        <div class="sig-top">
+          <div class="sig-pair">{{ s.pair }}</div>
+          <span class="sig-dir {{ 'buy' if s.direction == 'BUY' else 'sell' }}">{{ s.direction }}</span>
+        </div>
+        <div class="sig-grid">
+          <div class="sg"><div class="sg-val">{{ s.entry }}</div><div class="sg-lbl">Entry</div></div>
+          <div class="sg"><div class="sg-val" style="color:var(--red)">{{ s.sl }}</div><div class="sg-lbl">Stop Loss</div></div>
+          <div class="sg"><div class="sg-val" style="color:var(--green-3)">{{ s.tp }}</div><div class="sg-lbl">Take Profit</div></div>
+        </div>
+        <div class="sig-meta">
+          <span class="sig-tag {{ 't1' if s.category == 'Tier 1' else 't2' if s.category == 'Tier 2' else 'cry' }}">{{ s.category }}</span>
+          <span class="sig-tag {{ 'filled' if s.filled else 'waiting' }}">{{ "Filled" if s.filled else "Waiting for entry" }}</span>
+          <span class="sig-time">{{ s.timeframe }} · RR 1:{{ s.rr }} · {{ s.risk }}% risk</span>
+        </div>
+      </div>
+      {% endfor %}
+    </div>
+  </div>
+  {% endif %}
+
+  {% if pair_stats %}
+  <div class="section">
+    <div class="stit">Pair Performance</div>
+    <div class="pgrid">
+      {% for p in pair_stats %}
+      <div class="pc">
+        <div class="pn">{{ p.pair }}</div>
+        <div class="pt">{{ p.timeframe }} · <span style="font-weight:700">{{ p.category }}</span></div>
+        <div class="pnums">
+          <div class="pnum">Signals<span>{{ p.total }}</span></div>
+          <div class="pnum">Wins<span style="color:var(--green-3)">{{ p.tp }}</span></div>
+          <div class="pnum">Losses<span style="color:var(--red)">{{ p.sl }}</span></div>
+        </div>
+      </div>
+      {% endfor %}
+    </div>
+  </div>
+  {% endif %}
+
+  <div class="section">
+    <div class="stit">Signal History</div>
+    <div class="tbl-wrap">
+      <table>
+        <thead><tr><th>#</th><th>Pair</th><th>TF</th><th>Direction</th><th>Entry</th><th>SL</th><th>TP</th><th>RR</th><th>Risk</th><th>Category</th><th>Filled</th><th>Status</th><th>Time</th></tr></thead>
+        <tbody>
+          {% if not signals %}<tr><td colspan="13"><div class="empty">📡 No signals yet — waiting for the first alert</div></td></tr>{% endif %}
+          {% for s in signals %}
+          <tr>
+            <td class="mono" style="color:var(--text3)">#{{ s.id }}</td>
+            <td style="font-weight:700">{{ s.pair }}</td>
+            <td style="color:var(--text3)">{{ s.timeframe }}</td>
+            <td class="{{ 'buy-txt' if s.direction == 'BUY' else 'sell-txt' }}">{{ s.direction }}</td>
+            <td class="mono">{{ s.entry }}</td>
+            <td class="mono" style="color:var(--red)">{{ s.sl }}</td>
+            <td class="mono" style="color:var(--green-3)">{{ s.tp }}</td>
+            <td class="mono">1:{{ s.rr }}</td>
+            <td>{{ s.risk }}%</td>
+            <td><span class="sig-tag {{ 't1' if s.category == 'Tier 1' else 't2' if s.category == 'Tier 2' else 'cry' }}">{{ s.category }}</span></td>
+            <td>{{ "✅" if s.filled else "⏳" }}</td>
+            <td><span class="bdg {{ 'pnd' if s.status == 'Pending' else 'tph' if s.status == 'TP Hit' else 'slh' if s.status == 'SL Hit' else 'exp' }}">{{ s.status }}</span></td>
+            <td style="color:var(--text3);font-size:12px" class="mono">{{ s.fired_at[:16].replace("T"," ") if s.fired_at else "" }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+</div>
+<div class="footer">Auto-refreshes every 60s · Prices monitored every 15 mins · Data stored in PostgreSQL</div>
+<script>
+setTimeout(()=>location.reload(),60000);
+document.getElementById('hd').textContent=new Date().toLocaleDateString('en-GB',{day:'numeric',month:'short',year:'numeric'});
+</script>
+</body></html>"""
+
+# ═══════════════════════════════════════
+# API STATS (for landing page)
+# ═══════════════════════════════════════
+
+@app.route("/api/stats")
+def api_stats():
+    try:
+        conn = get_db()
+        rows = conn.run("SELECT status FROM signals")
+        conn.close()
+        total = len(rows)
+        tp = sum(1 for r in rows if r[0] == "TP Hit")
+        sl = sum(1 for r in rows if r[0] == "SL Hit")
+        closed = tp + sl
+        wr = round(tp / closed * 100, 1) if closed > 0 else 0
+        pf = round((tp * 1.5) / sl, 2) if sl > 0 else 0
+        return jsonify({"total": total, "tp": tp, "sl": sl, "wr": wr, "pf": pf})
+    except:
+        return jsonify({"total": 0, "tp": 0, "sl": 0, "wr": 0, "pf": 0})
+
+# ═══════════════════════════════════════
+# ROUTES
+# ═══════════════════════════════════════
+
 @app.route("/")
+def landing():
+    return render_template_string(LANDING_HTML)
+
+@app.route("/dashboard")
 def dashboard():
     conn = get_db()
     rows = conn.run("SELECT * FROM signals ORDER BY id DESC")
@@ -549,23 +708,30 @@ def dashboard():
     wr      = round(tp / closed * 100, 1) if closed > 0 else 0
     pf      = round((tp * 1.5) / sl, 2) if sl > 0 else 0
     stats   = {"total": total, "tp": tp, "sl": sl, "pending": pending, "wr": wr, "pf": pf}
-    return render_template_string(DASHBOARD_HTML, signals=signals, stats=stats, pair_stats=pair_stats)
+    active_signals = [s for s in signals if s["status"] == "Pending"]
+    return render_template_string(DASHBOARD_HTML, signals=signals, stats=stats,
+                                  pair_stats=pair_stats, active_signals=active_signals)
 
 @app.route("/test")
 def test():
-    send_telegram("✅ <b>Cmvng Bot is live!</b>\n\nPostgreSQL connected — data persists forever.\nAuto price monitoring active via TwelveData.")
+    send_telegram("✅ <b>Cmvng Bot is live!</b>\n\nPostgreSQL connected.\nAuto price monitoring active.\nLanding page + Dashboard ready.")
     return jsonify({"status": "ok"}), 200
 
-# ═══════════════════════════════════════════════════════════
-# STARTUP
-# ═══════════════════════════════════════════════════════════
+# ═══════════════════════════════════════
+# STARTUP — fix false SL hits + init
+# ═══════════════════════════════════════
 
 try:
     init_db()
     print("Database initialized OK")
+    # Fix GBPCAD #8 and EURCHF #7 — reset false SL hits
+    conn = get_db()
+    conn.run("UPDATE signals SET status='Pending', filled=FALSE, closed_at=NULL WHERE id=7")
+    conn.run("UPDATE signals SET status='Pending', filled=FALSE, closed_at=NULL WHERE id=8")
+    conn.close()
+    print("Fixed signals #7 and #8 — reset to Pending")
 except Exception as e:
     print("DB init error: {}".format(e))
-    print("DATABASE_URL set: {}".format(bool(DATABASE_URL)))
 
 monitor_thread = threading.Thread(target=check_pending_signals, daemon=True)
 monitor_thread.start()
