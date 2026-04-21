@@ -136,8 +136,11 @@ def get_prices_batch(pairs):
         return {}
     try:
         symbol_str = ",".join(symbols)
-        r = requests.get("https://api.twelvedata.com/price?symbol={}&apikey={}".format(symbol_str, TWELVEDATA_KEY), timeout=15)
+        url = "https://api.twelvedata.com/price?symbol={}&apikey={}".format(symbol_str, TWELVEDATA_KEY)
+        r = requests.get(url, timeout=15)
         data = r.json()
+        if "code" in data or "status" in data:
+            print("TwelveData response: {}".format(str(data)[:200]))
         prices = {}
         for pair in pairs:
             symbol = pair_to_symbol.get(pair.upper())
@@ -152,6 +155,10 @@ def get_prices_batch(pairs):
                 bp = get_binance_price(pair)
                 if bp is not None:
                     prices[pair.upper()] = bp
+        if prices:
+            print("Prices fetched: {}".format(len(prices)))
+        else:
+            print("WARNING: No prices returned for any pair!")
         return prices
     except Exception as e:
         print("TwelveData batch error: {}".format(e))
@@ -258,6 +265,22 @@ def webhook():
         entry     = float(data.get("entry", 0))
         sl        = float(data.get("sl", 0))
         tp        = float(data.get("tp", 0))
+
+        # Duplicate prevention — block same pair+TF+direction within 1 hour
+        try:
+            conn_dup = get_db()
+            recent = conn_dup.run(
+                "SELECT id FROM signals WHERE pair=:p AND timeframe=:t AND direction=:d AND fired_at > :cutoff ORDER BY id DESC LIMIT 1",
+                p=pair, t=timeframe, d=direction,
+                cutoff=(datetime.now(timezone.utc) - timedelta(hours=1)).isoformat()
+            )
+            conn_dup.close()
+            if len(recent) > 0:
+                print("Duplicate blocked: {} {} {} (recent signal #{} exists)".format(pair, timeframe, direction, recent[0][0]))
+                return jsonify({"status": "duplicate", "message": "Signal already exists within 1 hour"}), 200
+        except Exception as dup_err:
+            print("Duplicate check error: {}".format(dup_err))
+
         key       = "{}_{}".format(pair, timeframe)
         cfg       = PAIRS.get(key, {"category": "Unknown", "risk": 0.1, "grade": "Unrated"})
         sl_dist   = abs(entry - sl)
@@ -724,12 +747,7 @@ def test():
 try:
     init_db()
     print("Database initialized OK")
-    # Fix GBPCAD #8 and EURCHF #7 — reset false SL hits
-    conn = get_db()
-    conn.run("UPDATE signals SET status='Pending', filled=FALSE, closed_at=NULL WHERE id=7")
-    conn.run("UPDATE signals SET status='Pending', filled=FALSE, closed_at=NULL WHERE id=8")
-    conn.close()
-    print("Fixed signals #7 and #8 — reset to Pending")
+    print("Database ready")
 except Exception as e:
     print("DB init error: {}".format(e))
 
