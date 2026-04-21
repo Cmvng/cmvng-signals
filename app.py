@@ -124,51 +124,79 @@ def send_telegram(message):
 # PRICE FETCH — TwelveData batch + Binance fallback
 # ═══════════════════════════════════════
 
-def get_prices_batch(pairs):
-    symbols = []
-    pair_to_symbol = {}
-    for pair in pairs:
-        symbol = SYMBOL_MAP.get(pair.upper())
-        if symbol:
-            symbols.append(symbol)
-            pair_to_symbol[pair.upper()] = symbol
-    if not symbols or not TWELVEDATA_KEY:
-        return {}
+# Yahoo Finance symbol map — no API key, no rate limits
+YAHOO_MAP = {
+    "XAUUSD": "GC=F", "XAGUSD": "SI=F",
+    "EURUSD": "EURUSD=X", "GBPUSD": "GBPUSD=X", "USDJPY": "USDJPY=X",
+    "EURJPY": "EURJPY=X", "GBPJPY": "GBPJPY=X", "EURCHF": "EURCHF=X",
+    "NZDCAD": "NZDCAD=X", "USDCAD": "USDCAD=X", "EURNZD": "EURNZD=X",
+    "GBPNZD": "GBPNZD=X", "GBPCAD": "GBPCAD=X", "GBPAUD": "GBPAUD=X",
+    "CADJPY": "CADJPY=X", "EURCAD": "EURCAD=X", "AUDUSD": "AUDUSD=X",
+    "ADAUSD": "ADA-USD", "BTCUSD": "BTC-USD", "ETHUSD": "ETH-USD",
+    "BNBUSD": "BNB-USD", "SOLUSD": "SOL-USD", "XRPUSD": "XRP-USD",
+    "ZECUSD": "ZEC-USD", "HYPEUSD": "HYPE-USD", "MNTUSD": "MNT-USD",
+}
+
+def get_yahoo_price(pair):
+    symbol = YAHOO_MAP.get(pair.upper())
+    if not symbol:
+        return None
     try:
-        symbol_str = ",".join(symbols)
-        url = "https://api.twelvedata.com/price?symbol={}&apikey={}".format(symbol_str, TWELVEDATA_KEY)
-        r = requests.get(url, timeout=15)
+        url = "https://query1.finance.yahoo.com/v8/finance/chart/{}?interval=1m&range=1d".format(symbol)
+        headers = {"User-Agent": "Mozilla/5.0"}
+        r = requests.get(url, headers=headers, timeout=10)
         data = r.json()
-        if "code" in data or "status" in data:
-            print("TwelveData response: {}".format(str(data)[:200]))
-        prices = {}
-        for pair in pairs:
-            symbol = pair_to_symbol.get(pair.upper())
-            if not symbol:
-                continue
-            if symbol in data and "price" in data[symbol]:
-                prices[pair.upper()] = float(data[symbol]["price"])
-            elif "price" in data and len(symbols) == 1:
-                prices[pair.upper()] = float(data["price"])
-        for pair in pairs:
-            if pair.upper() not in prices and pair.upper() in BINANCE_MAP:
-                bp = get_binance_price(pair)
-                if bp is not None:
-                    prices[pair.upper()] = bp
-        if prices:
-            print("Prices fetched: {}".format(len(prices)))
-        else:
-            print("WARNING: No prices returned for any pair!")
-        return prices
-    except Exception as e:
-        print("TwelveData batch error: {}".format(e))
-        prices = {}
-        for pair in pairs:
-            if pair.upper() in BINANCE_MAP:
-                bp = get_binance_price(pair)
-                if bp is not None:
-                    prices[pair.upper()] = bp
-        return prices
+        meta = data.get("chart", {}).get("result", [{}])[0].get("meta", {})
+        price = meta.get("regularMarketPrice", None)
+        if price:
+            return float(price)
+    except Exception:
+        pass
+    return None
+
+def get_prices_batch(pairs):
+    prices = {}
+    # Primary: Yahoo Finance (no rate limits, covers forex + crypto)
+    for pair in pairs:
+        p = get_yahoo_price(pair)
+        if p is not None:
+            prices[pair.upper()] = p
+
+    # Fallback: Binance for any crypto not found on Yahoo
+    for pair in pairs:
+        if pair.upper() not in prices and pair.upper() in BINANCE_MAP:
+            bp = get_binance_price(pair)
+            if bp is not None:
+                prices[pair.upper()] = bp
+
+    # Last resort: TwelveData for anything still missing (max 8 symbols)
+    missing = [p for p in pairs if p.upper() not in prices]
+    if missing and TWELVEDATA_KEY:
+        try:
+            syms = []
+            p2s = {}
+            for pair in missing[:8]:
+                sym = SYMBOL_MAP.get(pair.upper())
+                if sym:
+                    syms.append(sym)
+                    p2s[pair.upper()] = sym
+            if syms:
+                r = requests.get("https://api.twelvedata.com/price?symbol={}&apikey={}".format(",".join(syms), TWELVEDATA_KEY), timeout=10)
+                data = r.json()
+                for pair in missing:
+                    sym = p2s.get(pair.upper())
+                    if sym and sym in data and "price" in data[sym]:
+                        prices[pair.upper()] = float(data[sym]["price"])
+                    elif sym and "price" in data and len(syms) == 1:
+                        prices[pair.upper()] = float(data["price"])
+        except Exception as e:
+            print("TwelveData fallback error: {}".format(e))
+
+    if prices:
+        print("Prices fetched: {} of {} pairs".format(len(prices), len(pairs)))
+    else:
+        print("WARNING: No prices returned!")
+    return prices
 
 # ═══════════════════════════════════════
 # AUTO UPDATE
