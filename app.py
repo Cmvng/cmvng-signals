@@ -103,6 +103,10 @@ def init_db():
         conn.run("ALTER TABLE signals ADD COLUMN IF NOT EXISTS filled BOOLEAN DEFAULT FALSE")
     except Exception:
         pass
+    try:
+        conn.run("ALTER TABLE signals ADD COLUMN IF NOT EXISTS filled_at TEXT")
+    except Exception:
+        pass
     conn.close()
 
 # ═══════════════════════════════════════
@@ -253,12 +257,13 @@ def check_pending_signals():
                         elif s["direction"] == "SELL" and price >= s["entry"]:
                             entry_filled = True
                         if entry_filled:
+                            fill_time = datetime.now(timezone.utc).isoformat()
                             conn2 = get_db()
-                            conn2.run("UPDATE signals SET filled=TRUE WHERE id=:i", i=s["id"])
+                            conn2.run("UPDATE signals SET filled=TRUE, filled_at=:t WHERE id=:i", t=fill_time, i=s["id"])
                             conn2.close()
-                            send_telegram("📥 <b>ENTRY FILLED — {} {}</b>\nFilled at: {}\n🆔 Signal #{}".format(
-                                s["pair"], s["direction"], price, s["id"]))
-                            print("Signal #{} FILLED at {}".format(s["id"], price))
+                            send_telegram("📥 <b>ENTRY FILLED — {} {}</b>\nFilled at: {}\nTime: {}\n🆔 Signal #{}".format(
+                                s["pair"], s["direction"], price, fill_time[:16].replace("T"," "), s["id"]))
+                            print("Signal #{} FILLED at {} at {}".format(s["id"], price, fill_time[:16]))
                             continue
                     if filled:
                         if s["direction"] == "BUY":
@@ -646,6 +651,10 @@ tr:hover td{background:var(--green-7)}
           <span class="sig-tag {{ 'filled' if s.filled else 'waiting' }}">{{ "Filled" if s.filled else "Waiting for entry" }}</span>
           <span class="sig-time">{{ s.timeframe }} · RR 1:{{ s.rr }} · {{ s.risk }}% risk</span>
         </div>
+        <div style="margin-top:8px;font-size:11px;color:var(--text3)">
+          Signal: {{ s.fired_at[:16].replace("T"," ") if s.fired_at else "" }}
+          {% if s.filled_at %} · Filled: {{ s.filled_at[:16].replace("T"," ") }}{% endif %}
+        </div>
       </div>
       {% endfor %}
     </div>
@@ -675,9 +684,9 @@ tr:hover td{background:var(--green-7)}
     <div class="stit">Signal History</div>
     <div class="tbl-wrap">
       <table>
-        <thead><tr><th>#</th><th>Pair</th><th>TF</th><th>Direction</th><th>Entry</th><th>SL</th><th>TP</th><th>RR</th><th>Risk</th><th>Category</th><th>Filled</th><th>Status</th><th>Time</th></tr></thead>
+        <thead><tr><th>#</th><th>Pair</th><th>TF</th><th>Dir</th><th>Entry</th><th>SL</th><th>TP</th><th>RR</th><th>Risk</th><th>Cat</th><th>Filled</th><th>Status</th><th>Signal Time</th><th>Filled At</th><th>Closed At</th></tr></thead>
         <tbody>
-          {% if not signals %}<tr><td colspan="13"><div class="empty">📡 No signals yet — waiting for the first alert</div></td></tr>{% endif %}
+          {% if not signals %}<tr><td colspan="15"><div class="empty">📡 No signals yet — waiting for the first alert</div></td></tr>{% endif %}
           {% for s in signals %}
           <tr>
             <td class="mono" style="color:var(--text3)">#{{ s.id }}</td>
@@ -693,6 +702,8 @@ tr:hover td{background:var(--green-7)}
             <td>{{ "✅" if s.filled else "⏳" }}</td>
             <td><span class="bdg {{ 'pnd' if s.status == 'Pending' else 'tph' if s.status == 'TP Hit' else 'slh' if s.status == 'SL Hit' else 'exp' }}">{{ s.status }}</span></td>
             <td style="color:var(--text3);font-size:12px" class="mono">{{ s.fired_at[:16].replace("T"," ") if s.fired_at else "" }}</td>
+            <td style="color:var(--green-3);font-size:12px" class="mono">{{ s.filled_at[:16].replace("T"," ") if s.filled_at else "—" }}</td>
+            <td style="color:var(--text3);font-size:12px" class="mono">{{ s.closed_at[:16].replace("T"," ") if s.closed_at else "—" }}</td>
           </tr>
           {% endfor %}
         </tbody>
