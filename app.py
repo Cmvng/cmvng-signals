@@ -221,13 +221,17 @@ def update_signal_auto(sig_id, status, pair, direction, price=None, tp=None, sl=
 # BACKGROUND MONITOR
 # ═══════════════════════════════════════
 
-def get_candle_data(pair):
-    """Fetch recent candle high/low data for accurate fill and TP/SL detection"""
-    # Try Binance first for crypto (gives kline data with highs and lows)
+def get_candle_data(pair, after_timestamp=None):
+    """Fetch candle high/low data ONLY from after the signal fired"""
+    # Try Binance for crypto
     if pair.upper() in BINANCE_MAP:
         try:
             symbol = BINANCE_MAP[pair.upper()]
-            url = "https://api.binance.com/api/v3/klines?symbol={}&interval=15m&limit=20".format(symbol)
+            params = "symbol={}&interval=5m&limit=100".format(symbol)
+            if after_timestamp:
+                start_ms = int(after_timestamp.timestamp() * 1000)
+                params += "&startTime={}".format(start_ms)
+            url = "https://api.binance.com/api/v3/klines?{}".format(params)
             r = requests.get(url, timeout=10)
             data = r.json()
             if isinstance(data, list) and len(data) > 0:
@@ -238,24 +242,40 @@ def get_candle_data(pair):
         except Exception as e:
             print("Binance candle error {}: {}".format(pair, e))
 
-    # Yahoo Finance for forex — get chart data with highs and lows
+    # Yahoo Finance for forex
     yahoo_sym = YAHOO_MAP.get(pair.upper())
     if yahoo_sym:
         try:
-            url = "https://query1.finance.yahoo.com/v8/finance/chart/{}?interval=15m&range=1d".format(yahoo_sym)
+            url = "https://query1.finance.yahoo.com/v8/finance/chart/{}?interval=5m&range=5d".format(yahoo_sym)
             headers = {"User-Agent": "Mozilla/5.0"}
             r = requests.get(url, headers=headers, timeout=10)
             data = r.json()
             result = data.get("chart", {}).get("result", [{}])[0]
+            timestamps = result.get("timestamp", [])
             indicators = result.get("indicators", {}).get("quote", [{}])[0]
             highs_raw = indicators.get("high", [])
             lows_raw = indicators.get("low", [])
-            highs = [h for h in highs_raw if h is not None]
-            lows = [l for l in lows_raw if l is not None]
             meta = result.get("meta", {})
-            last_price = meta.get("regularMarketPrice", 0)
-            if highs and lows and last_price:
-                return {"high": max(highs), "low": min(lows), "price": float(last_price), "highs": highs, "lows": lows}
+            last_price = float(meta.get("regularMarketPrice", 0))
+
+            if after_timestamp and timestamps:
+                cutoff = int(after_timestamp.timestamp())
+                filtered_highs = []
+                filtered_lows = []
+                for i, ts in enumerate(timestamps):
+                    if ts >= cutoff:
+                        if i < len(highs_raw) and highs_raw[i] is not None:
+                            filtered_highs.append(highs_raw[i])
+                        if i < len(lows_raw) and lows_raw[i] is not None:
+                            filtered_lows.append(lows_raw[i])
+                if filtered_highs and filtered_lows:
+                    return {"high": max(filtered_highs), "low": min(filtered_lows), "price": last_price,
+                            "highs": filtered_highs, "lows": filtered_lows}
+            else:
+                highs = [h for h in highs_raw if h is not None]
+                lows = [l for l in lows_raw if l is not None]
+                if highs and lows and last_price:
+                    return {"high": max(highs), "low": min(lows), "price": last_price, "highs": highs, "lows": lows}
         except Exception as e:
             print("Yahoo candle error {}: {}".format(pair, e))
 
@@ -273,15 +293,8 @@ def check_pending_signals():
                 time.sleep(CHECK_INTERVAL)
                 continue
 
-            # Get candle data for each unique pair
             unique_pairs = list(set(s["pair"] for s in pending))
-            candle_cache = {}
-            for pair in unique_pairs:
-                cd = get_candle_data(pair)
-                if cd:
-                    candle_cache[pair.upper()] = cd
-            print("Monitor: {} pairs, {} pending, {} with candle data".format(
-                len(unique_pairs), len(pending), len(candle_cache)))
+            print("Monitor: {} pairs, {} pending".format(len(unique_pairs), len(pending)))
 
             for s in pending:
                 try:
@@ -293,21 +306,30 @@ def check_pending_signals():
                         update_signal_auto(s["id"], "Expired", s["pair"], s["direction"])
                         continue
 
-                    candles = candle_cache.get(s["pair"].upper())
+                    # Get candle data ONLY from after this signal fired
+                    # If already filled, get data from after fill time
+                    filled = s.get("filled", False)
+                    if filled and s.get("filled_at"):
+                        check_from = datetime.fromisoformat(s["filled_at"])
+                        if check_from.tzinfo is None:
+                            check_from = check_from.replace(tzinfo=timezone.utc)
+                    else:
+                        check_from = fired_dt
+
+                    candles = get_candle_data(s["pair"], after_timestamp=check_from)
                     if candles is None:
                         continue
 
-                    day_high = candles["high"]
-                    day_low = candles["low"]
+                    post_signal_high = candles["high"]
+                    post_signal_low = candles["low"]
                     price = candles["price"]
-                    filled = s.get("filled", False)
 
                     # Step 1: Check if entry was reached using candle lows/highs
                     if not filled:
                         entry_reached = False
-                        if s["direction"] == "BUY" and day_low <= s["entry"]:
+                        if s["direction"] == "BUY" and post_signal_low <= s["entry"]:
                             entry_reached = True
-                        elif s["direction"] == "SELL" and day_high >= s["entry"]:
+                        elif s["direction"] == "SELL" and post_signal_high >= s["entry"]:
                             entry_reached = True
 
                         if entry_reached:
@@ -318,15 +340,15 @@ def check_pending_signals():
                             send_telegram("📥 <b>ENTRY FILLED — {} {}</b>\nEntry: {}\nTime: {}\n🆔 Signal #{}".format(
                                 s["pair"], s["direction"], s["entry"], fill_time[:16].replace("T"," "), s["id"]))
                             print("Signal #{} {} FILLED — entry {} reached (day low={}, day high={})".format(
-                                s["id"], s["pair"], s["entry"], day_low, day_high))
+                                s["id"], s["pair"], s["entry"], post_signal_low, post_signal_high))
                             continue
 
                     # Step 2: Only check TP/SL if entry was PREVIOUSLY filled
                     if filled:
                         if s["direction"] == "BUY":
-                            # For BUY: check if day_low hit SL or day_high hit TP
-                            sl_hit = day_low <= s["sl"]
-                            tp_hit = day_high >= s["tp"]
+                            # For BUY: check if post_signal_low hit SL or post_signal_high hit TP
+                            sl_hit = post_signal_low <= s["sl"]
+                            tp_hit = post_signal_high >= s["tp"]
 
                             if sl_hit and tp_hit:
                                 # Both levels were touched — need candle-by-candle check
@@ -354,9 +376,9 @@ def check_pending_signals():
                                 update_signal_auto(s["id"], "SL Hit", s["pair"], s["direction"], price, s["tp"], s["sl"])
 
                         elif s["direction"] == "SELL":
-                            # For SELL: check if day_high hit SL or day_low hit TP
-                            sl_hit = day_high >= s["sl"]
-                            tp_hit = day_low <= s["tp"]
+                            # For SELL: check if post_signal_high hit SL or post_signal_low hit TP
+                            sl_hit = post_signal_high >= s["sl"]
+                            tp_hit = post_signal_low <= s["tp"]
 
                             if sl_hit and tp_hit:
                                 hit_sl_first = False
@@ -891,13 +913,14 @@ def test():
 try:
     init_db()
     print("Database initialized OK")
-    # Reset signals that were falsely filled/SL'd due to wrong Yahoo crypto prices
+    # Reset ALL signals that were marked by broken monitoring
+    # Only keep TP/SL hits from before the monitor was fixed (signals 1-11 from original deployment)
+    # Reset everything from signal 12 onward that was marked SL Hit during broken period
     conn = get_db()
-    false_ids = [20, 23, 25, 26, 28, 32, 33, 34, 44, 50, 63]
-    for sid in false_ids:
-        conn.run("UPDATE signals SET status='Pending', filled=FALSE, filled_at=NULL, closed_at=NULL WHERE id=:i AND status='SL Hit'", i=sid)
+    conn.run("UPDATE signals SET status='Pending', filled=FALSE, filled_at=NULL, closed_at=NULL WHERE id >= 12 AND status='SL Hit'")
+    conn.run("UPDATE signals SET filled=FALSE, filled_at=NULL WHERE id >= 12 AND status='Pending' AND filled=TRUE")
     conn.close()
-    print("Database ready — reset falsely marked signals")
+    print("Database ready — reset all signals from broken monitoring period")
 except Exception as e:
     print("DB init error: {}".format(e))
 
