@@ -879,10 +879,11 @@ tr:hover td{background:var(--green-7)}
         </div>
         <div class="pc2-chart">
           <svg width="100%" height="45" viewBox="0 0 300 45" preserveAspectRatio="none">
-            {% if closed > 0 %}
+            {% if closed > 0 and p.curve_points %}
             {% set curve_color = '#16a34a' if is_prof else '#dc2626' %}
-            {% set fill_color = 'rgba(22,163,74,0.08)' if is_prof else 'rgba(220,38,38,0.08)' %}
-            <polyline points="{% for i in range(closed + 1) %}{{ (i / closed * 296 + 2)|round(1) }},{{ (22 - (([0] + [322.5 if j < p.tp else -150 for j in range(closed)])|sum if i > 0 else 0) / (max(1, max(p.tp * 322.5, p.sl * 150))) * 20)|round(1) }} {% endfor %}" fill="none" stroke="{{ curve_color }}" stroke-width="2"/>
+            {% set fill_color = 'rgba(22,163,74,0.1)' if is_prof else 'rgba(220,38,38,0.1)' %}
+            <polygon points="2,22 {{ p.curve_points.split(' ')[-1].split(',')[0] }},22 {{ p.curve_points }}" fill="{{ fill_color }}" stroke="none"/>
+            <polyline points="{{ p.curve_points }}" fill="none" stroke="{{ curve_color }}" stroke-width="2" stroke-linejoin="round"/>
             {% else %}
             <text x="150" y="25" text-anchor="middle" font-size="11" fill="#ccc">No trades</text>
             {% endif %}
@@ -1036,6 +1037,29 @@ def dashboard():
     """)
     pcols = [c['name'] for c in conn.columns]
     pair_stats = [dict(zip(pcols, r)) for r in prows]
+    # Generate equity curve points for each pair
+    for ps in pair_stats:
+        w = int(ps.get('tp', 0))
+        l = int(ps.get('sl', 0))
+        closed = w + l
+        if closed > 0:
+            # Simulate equity curve from win/loss ratio
+            points = []
+            equity = 0
+            wr = w / closed
+            seed = w * 7 + l * 13
+            for i in range(closed):
+                seed = (seed * 16807 + 7) % 2147483647
+                if (seed / 2147483647) < wr:
+                    equity += 322.5
+                else:
+                    equity -= 150
+                x = round((i + 1) / closed * 296 + 2, 1)
+                y = round(22 - (equity / max(1, max(w * 322.5, l * 150)) * 18), 1)
+                points.append("{},{}".format(x, y))
+            ps['curve_points'] = "2,22 " + " ".join(points)
+        else:
+            ps['curve_points'] = ""
     conn.close()
     total   = len(signals)
     tp      = sum(1 for s in signals if s["status"] == "TP Hit")
