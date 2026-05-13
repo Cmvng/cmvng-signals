@@ -729,13 +729,32 @@ body{font-family:'DM Sans',sans-serif;background:var(--bg);color:var(--text)}
 .sig-tag.filled{background:var(--green-7);color:var(--green-3)}
 .sig-tag.waiting{background:var(--blue-bg);color:var(--blue)}
 .sig-time{font-size:11px;color:var(--text3)}
-.pgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:12px;margin-bottom:28px}
-.pc{background:var(--card);border:1px solid var(--border);border-radius:14px;padding:18px;border-left:4px solid var(--green-3)}
-.pn{font-size:15px;font-weight:700;color:var(--green-1);margin-bottom:3px}
-.pt{font-size:11px;color:var(--text3);margin-bottom:12px}
-.pnums{display:flex;gap:16px}
-.pnum{font-size:10px;color:var(--text3);font-weight:700;text-transform:uppercase}
-.pnum span{display:block;font-size:16px;font-weight:700;color:var(--green-1);margin-top:2px;font-family:'JetBrains Mono',monospace}
+.pgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(340px,1fr));gap:14px;margin-bottom:28px}
+.perf-summary{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:10px;margin-bottom:16px}
+.ps-card{background:var(--card);border:1px solid var(--border);border-radius:12px;padding:14px 16px}
+.ps-lbl{font-size:10px;font-weight:700;color:var(--text3);text-transform:uppercase;letter-spacing:.08em}
+.ps-val{font-size:22px;font-weight:700;color:var(--green-1);font-family:'JetBrains Mono',monospace;margin-top:4px}
+.perf-filters{display:flex;gap:4px;margin-bottom:14px;background:var(--green-7);border-radius:10px;padding:3px;width:fit-content}
+.pf-btn{padding:6px 14px;font-size:12px;font-weight:600;border:none;border-radius:8px;cursor:pointer;background:transparent;color:var(--text3)}
+.pf-active{background:var(--green-1)!important;color:#fff!important}
+.pc2{background:var(--card);border:1px solid var(--border);border-radius:14px;padding:18px;transition:box-shadow .15s}
+.pc2:hover{box-shadow:0 4px 16px rgba(0,60,0,.06)}
+.pc2-top{display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:10px}
+.pc2-pair{font-size:18px;font-weight:700;color:var(--green-1);letter-spacing:-.3px}
+.pc2-tags{display:flex;gap:6px;margin-top:4px;align-items:center}
+.pc2-cat{font-size:10px;font-weight:700;padding:2px 8px;border-radius:20px}
+.pc2-tf{font-size:10px;font-weight:600;color:var(--text3)}
+.pc2-status{font-size:10px;font-weight:700;padding:2px 10px;border-radius:20px;display:inline-block}
+.pc2-pnl{font-size:20px;font-weight:700;font-family:'JetBrains Mono',monospace;margin-top:4px}
+.pc2-chart{margin:8px 0}
+.pc2-bar{margin-top:8px}
+.pc2-bar-inner{display:flex;height:6px;border-radius:3px;overflow:hidden}
+.pc2-bar-labels{display:flex;justify-content:space-between;margin-top:4px}
+.pc2-bar-labels span{font-size:10px;font-weight:600}
+.pc2-stats{display:grid;grid-template-columns:1fr 1fr 1fr 1fr;gap:8px;margin-top:12px;padding-top:12px;border-top:1px solid var(--border)}
+.pc2-stat{text-align:center}
+.pc2-stat-lbl{font-size:10px;color:var(--text3);font-weight:700;text-transform:uppercase;letter-spacing:.06em}
+.pc2-stat-val{font-size:13px;font-weight:700;color:var(--green-1);font-family:'JetBrains Mono',monospace;margin-top:2px}
 .tbl-wrap{overflow-x:auto;background:var(--card);border:1px solid var(--border);border-radius:14px}
 table{width:100%;border-collapse:collapse;font-size:13px;min-width:750px}
 th{text-align:left;padding:12px 14px;font-size:10px;color:var(--text3);text-transform:uppercase;letter-spacing:.06em;border-bottom:1px solid var(--border);background:var(--green-7);font-weight:700}
@@ -804,16 +823,91 @@ tr:hover td{background:var(--green-7)}
 
   {% if pair_stats %}
   <div class="section">
-    <div class="stit">Pair Performance</div>
-    <div class="pgrid">
+    <div class="stit">Pair Performance · $10,000 per pair · $150 risk · 1:2.15 RR</div>
+    <div class="perf-summary">
+      <div class="ps-card">
+        <div class="ps-lbl">Total P/L</div>
+        <div class="ps-val" id="ps-total">—</div>
+      </div>
+      <div class="ps-card">
+        <div class="ps-lbl">Profitable Pairs</div>
+        <div class="ps-val" style="color:var(--green-3)" id="ps-prof-count">—</div>
+      </div>
+      <div class="ps-card">
+        <div class="ps-lbl">Losing Pairs</div>
+        <div class="ps-val" style="color:var(--red)" id="ps-loss-count">—</div>
+      </div>
+      <div class="ps-card">
+        <div class="ps-lbl">Win Rate</div>
+        <div class="ps-val" id="ps-wr">—</div>
+      </div>
+    </div>
+    <div class="perf-filters">
+      <button class="pf-btn pf-active" onclick="filterPairs('all',this)">All</button>
+      <button class="pf-btn" onclick="filterPairs('profitable',this)">Profitable</button>
+      <button class="pf-btn" onclick="filterPairs('losing',this)">Losing</button>
+      <button class="pf-btn" onclick="filterPairs('nodata',this)">No Data</button>
+    </div>
+    <div class="pgrid" id="pair-grid">
       {% for p in pair_stats %}
-      <div class="pc">
-        <div class="pn">{{ p.pair }}</div>
-        <div class="pt">{{ p.timeframe }} · <span style="font-weight:700">{{ p.category }}</span></div>
-        <div class="pnums">
-          <div class="pnum">Signals<span>{{ p.total }}</span></div>
-          <div class="pnum">Wins<span style="color:var(--green-3)">{{ p.tp }}</span></div>
-          <div class="pnum">Losses<span style="color:var(--red)">{{ p.sl }}</span></div>
+      {% set closed = p.tp + p.sl %}
+      {% set wr = (p.tp / closed * 100)|round(1) if closed > 0 else 0 %}
+      {% set pf_val = (p.tp * 2.15 / p.sl)|round(2) if p.sl > 0 else (999 if p.tp > 0 else 0) %}
+      {% set net = p.tp * 322.5 - p.sl * 150 %}
+      {% set roi = (net / 10000 * 100)|round(1) %}
+      {% set is_prof = (pf_val >= 1.0 and closed > 0) %}
+      {% set no_data = (closed == 0) %}
+      {% set status_color = '#94a3b8' if no_data else ('#16a34a' if is_prof else '#c62828') %}
+      {% set status_text = 'No Data' if no_data else ('Profitable' if is_prof else 'Losing') %}
+      {% set cat_bg = '#e8f5e9' if p.category == 'Tier 1' else ('#fff8e1' if p.category == 'Tier 2' else '#e3f2fd') %}
+      {% set cat_col = '#1b5e20' if p.category == 'Tier 1' else ('#e65100' if p.category == 'Tier 2' else '#0d47a1') %}
+      <div class="pc2" data-status="{{ 'profitable' if is_prof else ('nodata' if no_data else 'losing') }}" style="border-left:4px solid {{ status_color }}">
+        <div class="pc2-top">
+          <div>
+            <div class="pc2-pair">{{ p.pair }}</div>
+            <div class="pc2-tags">
+              <span class="pc2-cat" style="background:{{ cat_bg }};color:{{ cat_col }}">{{ p.category }}</span>
+              <span class="pc2-tf">{{ p.timeframe }}</span>
+            </div>
+          </div>
+          <div style="text-align:right">
+            <span class="pc2-status" style="background:{{ '#f0fdf4' if is_prof else ('#fef2f2' if not no_data else '#f8fafc') }};color:{{ status_color }}">{{ status_text }}</span>
+            <div class="pc2-pnl" style="color:{{ status_color }}">
+              {% if no_data %}—{% elif net >= 0 %}+${{ "%.2f"|format(net) }}{% else %}-${{ "%.2f"|format(net|abs) }}{% endif %}
+            </div>
+          </div>
+        </div>
+        <div class="pc2-chart">
+          <svg width="100%" height="45" viewBox="0 0 300 45" preserveAspectRatio="none">
+            {% if closed > 0 %}
+            {% set curve_color = '#16a34a' if is_prof else '#dc2626' %}
+            {% set fill_color = 'rgba(22,163,74,0.08)' if is_prof else 'rgba(220,38,38,0.08)' %}
+            <polyline points="{% for i in range(closed + 1) %}{{ (i / closed * 296 + 2)|round(1) }},{{ (22 - (([0] + [322.5 if j < p.tp else -150 for j in range(closed)])|sum if i > 0 else 0) / (max(1, max(p.tp * 322.5, p.sl * 150))) * 20)|round(1) }} {% endfor %}" fill="none" stroke="{{ curve_color }}" stroke-width="2"/>
+            {% else %}
+            <text x="150" y="25" text-anchor="middle" font-size="11" fill="#ccc">No trades</text>
+            {% endif %}
+          </svg>
+        </div>
+        <div class="pc2-bar">
+          <div class="pc2-bar-inner">
+            {% if closed > 0 %}
+            <div style="width:{{ wr }}%;background:var(--green-3);height:100%;border-radius:3px 0 0 3px"></div>
+            <div style="width:{{ 100 - wr }}%;background:var(--red);height:100%;border-radius:0 3px 3px 0"></div>
+            {% else %}
+            <div style="width:100%;background:#e5e7eb;height:100%;border-radius:3px"></div>
+            {% endif %}
+          </div>
+          <div class="pc2-bar-labels">
+            <span style="color:var(--green-3)">{{ p.tp }}W</span>
+            <span style="color:#94a3b8">{{ wr }}% WR</span>
+            <span style="color:var(--red)">{{ p.sl }}L</span>
+          </div>
+        </div>
+        <div class="pc2-stats">
+          <div class="pc2-stat"><div class="pc2-stat-lbl">Signals</div><div class="pc2-stat-val">{{ p.total }}</div></div>
+          <div class="pc2-stat"><div class="pc2-stat-lbl">PF</div><div class="pc2-stat-val">{% if pf_val == 999 %}∞{% else %}{{ pf_val }}{% endif %}</div></div>
+          <div class="pc2-stat"><div class="pc2-stat-lbl">ROI</div><div class="pc2-stat-val">{% if no_data %}—{% elif roi >= 0 %}+{{ roi }}%{% else %}{{ roi }}%{% endif %}</div></div>
+          <div class="pc2-stat"><div class="pc2-stat-lbl">Balance</div><div class="pc2-stat-val">${{ "%.0f"|format(10000 + net) }}</div></div>
         </div>
       </div>
       {% endfor %}
@@ -856,6 +950,46 @@ tr:hover td{background:var(--green-7)}
 <script>
 setTimeout(()=>location.reload(),60000);
 document.getElementById('hd').textContent=new Date().toLocaleDateString('en-GB',{day:'numeric',month:'short',year:'numeric'});
+// Pair performance summary calculations
+(function(){
+  var cards=document.querySelectorAll('.pc2');
+  var totalNet=0,profCount=0,lossCount=0,totalW=0,totalL=0;
+  cards.forEach(function(c){
+    var s=c.getAttribute('data-status');
+    var pnl=c.querySelector('.pc2-pnl');
+    if(pnl){
+      var txt=pnl.textContent.trim();
+      if(txt!=='—'){
+        var v=parseFloat(txt.replace(/[$,+]/g,''));
+        if(!isNaN(v))totalNet+=v;
+      }
+    }
+    var labels=c.querySelectorAll('.pc2-bar-labels span');
+    if(labels.length>=3){
+      var w=parseInt(labels[0].textContent)||0;
+      var l=parseInt(labels[2].textContent)||0;
+      totalW+=w;totalL+=l;
+    }
+    if(s==='profitable')profCount++;
+    if(s==='losing')lossCount++;
+  });
+  var el=document.getElementById('ps-total');
+  if(el){el.textContent=(totalNet>=0?'+':'')+'\$'+totalNet.toFixed(2);el.style.color=totalNet>=0?'var(--green-3)':'var(--red)';}
+  var pc=document.getElementById('ps-prof-count');if(pc)pc.textContent=profCount;
+  var lc=document.getElementById('ps-loss-count');if(lc)lc.textContent=lossCount;
+  var wr=document.getElementById('ps-wr');
+  if(wr){var wrv=totalW+totalL>0?(totalW/(totalW+totalL)*100).toFixed(1):0;wr.textContent=wrv+'%';wr.style.color=parseFloat(wrv)>=33?'var(--green-3)':'var(--red)';}
+})();
+function filterPairs(f,btn){
+  document.querySelectorAll('.pf-btn').forEach(function(b){b.classList.remove('pf-active')});
+  btn.classList.add('pf-active');
+  document.querySelectorAll('.pc2').forEach(function(c){
+    var s=c.getAttribute('data-status');
+    if(f==='all')c.style.display='';
+    else if(f===s)c.style.display='';
+    else c.style.display='none';
+  });
+}
 </script>
 </body></html>"""
 
@@ -909,7 +1043,7 @@ def dashboard():
     pending = sum(1 for s in signals if s["status"] == "Pending")
     closed  = tp + sl
     wr      = round(tp / closed * 100, 1) if closed > 0 else 0
-    pf      = round((tp * 1.5) / sl, 2) if sl > 0 else 0
+    pf      = round((tp * 2.15) / sl, 2) if sl > 0 else 0
     stats   = {"total": total, "tp": tp, "sl": sl, "pending": pending, "wr": wr, "pf": pf}
     active_signals = [s for s in signals if s["status"] == "Pending"]
     return render_template_string(DASHBOARD_HTML, signals=signals, stats=stats,
