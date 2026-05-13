@@ -58,9 +58,9 @@ SYMBOL_MAP = {
 }
 
 BINANCE_MAP = {
-    "MNTUSD": "MNTUSDT", "ADAUSD": "ADAUSDT", "BTCUSD": "BTCUSDT",
+    "ADAUSD": "ADAUSDT", "BTCUSD": "BTCUSDT",
     "ETHUSD": "ETHUSDT", "BNBUSD": "BNBUSDT", "SOLUSD": "SOLUSDT",
-    "XRPUSD": "XRPUSDT", "ZECUSD": "ZECUSDT", "HYPEUSD": "HYPEUSDT",
+    "XRPUSD": "XRPUSDT", "ZECUSD": "ZECUSDT",
 }
 
 def get_binance_price(pair):
@@ -974,7 +974,7 @@ document.getElementById('hd').textContent=new Date().toLocaleDateString('en-GB',
     if(s==='losing')lossCount++;
   });
   var el=document.getElementById('ps-total');
-  if(el){el.textContent=(totalNet>=0?'+':'')+'\$'+totalNet.toFixed(2);el.style.color=totalNet>=0?'var(--green-3)':'var(--red)';}
+  if(el){el.textContent=(totalNet>=0?'+':'')+'$'+totalNet.toFixed(2);el.style.color=totalNet>=0?'var(--green-3)':'var(--red)';}
   var pc=document.getElementById('ps-prof-count');if(pc)pc.textContent=profCount;
   var lc=document.getElementById('ps-loss-count');if(lc)lc.textContent=lossCount;
   var wr=document.getElementById('ps-wr');
