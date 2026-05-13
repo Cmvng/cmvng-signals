@@ -136,6 +136,8 @@ YAHOO_MAP = {
     "NZDCAD": "NZDCAD=X", "USDCAD": "USDCAD=X", "EURNZD": "EURNZD=X",
     "GBPNZD": "GBPNZD=X", "GBPCAD": "GBPCAD=X", "GBPAUD": "GBPAUD=X",
     "CADJPY": "CADJPY=X", "EURCAD": "EURCAD=X", "AUDUSD": "AUDUSD=X",
+    "BTCUSD": "BTC-USD", "ETHUSD": "ETH-USD", "SOLUSD": "SOL-USD",
+    "ADAUSD": "ADA-USD", "BNBUSD": "BNB-USD", "ZECUSD": "ZEC-USD",
 }
 
 def get_yahoo_price(pair):
@@ -193,6 +195,9 @@ def get_prices_batch(pairs):
         except Exception as e:
             print("TwelveData fallback error: {}".format(e))
 
+    missing = [p for p in pairs if p.upper() not in prices]
+    if missing:
+        print("Prices missing for: {}".format(", ".join(missing)))
     if prices:
         print("Prices fetched: {} of {} pairs".format(len(prices), len(pairs)))
     else:
@@ -223,26 +228,7 @@ def update_signal_auto(sig_id, status, pair, direction, price=None, tp=None, sl=
 
 def get_candle_data(pair, after_timestamp=None):
     """Fetch candle high/low data ONLY from after the signal fired"""
-    # Try Binance for crypto
-    if pair.upper() in BINANCE_MAP:
-        try:
-            symbol = BINANCE_MAP[pair.upper()]
-            params = "symbol={}&interval=5m&limit=100".format(symbol)
-            if after_timestamp:
-                start_ms = int(after_timestamp.timestamp() * 1000)
-                params += "&startTime={}".format(start_ms)
-            url = "https://api.binance.com/api/v3/klines?{}".format(params)
-            r = requests.get(url, timeout=10)
-            data = r.json()
-            if isinstance(data, list) and len(data) > 0:
-                highs = [float(c[2]) for c in data]
-                lows = [float(c[3]) for c in data]
-                last_price = float(data[-1][4])
-                return {"high": max(highs), "low": min(lows), "price": last_price, "highs": highs, "lows": lows}
-        except Exception as e:
-            print("Binance candle error {}: {}".format(pair, e))
-
-    # Yahoo Finance for forex
+    # Yahoo Finance handles ALL pairs — forex and crypto
     yahoo_sym = YAHOO_MAP.get(pair.upper())
     if yahoo_sym:
         try:
@@ -278,6 +264,27 @@ def get_candle_data(pair, after_timestamp=None):
                     return {"high": max(highs), "low": min(lows), "price": last_price, "highs": highs, "lows": lows}
         except Exception as e:
             print("Yahoo candle error {}: {}".format(pair, e))
+
+    # Binance fallback — only if Yahoo failed and pair is crypto
+    if pair.upper() in BINANCE_MAP:
+        try:
+            symbol = BINANCE_MAP[pair.upper()]
+            params = "symbol={}&interval=5m&limit=100".format(symbol)
+            if after_timestamp:
+                start_ms = int(after_timestamp.timestamp() * 1000)
+                params += "&startTime={}".format(start_ms)
+            url = "https://api.binance.com/api/v3/klines?{}".format(params)
+            r = requests.get(url, timeout=5)
+            data = r.json()
+            if isinstance(data, list) and len(data) > 0:
+                highs = [float(c[2]) for c in data]
+                lows = [float(c[3]) for c in data]
+                last_price = float(data[-1][4])
+                return {"high": max(highs), "low": min(lows), "price": last_price, "highs": highs, "lows": lows}
+            else:
+                print("Binance returned non-list for {}: {}".format(pair, str(data)[:100]))
+        except Exception as e:
+            print("Binance fallback failed {}: {}".format(pair, str(e)[:80]))
 
     return None
 
@@ -326,6 +333,13 @@ def check_pending_signals():
 
                     # Step 1: Check if entry was reached using candle lows/highs
                     if not filled:
+                        # Sanity check — if price data is wildly different from entry, skip
+                        # This catches wrong Yahoo tokens (e.g. MNT returning wrong coin)
+                        if abs(price - s["entry"]) / s["entry"] > 0.9:
+                            print("Price sanity FAIL for {} #{}: price={} entry={} — skipping".format(
+                                s["pair"], s["id"], price, s["entry"]))
+                            continue
+
                         entry_reached = False
                         if s["direction"] == "BUY" and post_signal_low <= s["entry"]:
                             entry_reached = True
@@ -913,14 +927,7 @@ def test():
 try:
     init_db()
     print("Database initialized OK")
-    # Reset ALL signals that were marked by broken monitoring
-    # Only keep TP/SL hits from before the monitor was fixed (signals 1-11 from original deployment)
-    # Reset everything from signal 12 onward that was marked SL Hit during broken period
-    conn = get_db()
-    conn.run("UPDATE signals SET status='Pending', filled=FALSE, filled_at=NULL, closed_at=NULL WHERE id >= 12 AND status='SL Hit'")
-    conn.run("UPDATE signals SET filled=FALSE, filled_at=NULL WHERE id >= 12 AND status='Pending' AND filled=TRUE")
-    conn.close()
-    print("Database ready — reset all signals from broken monitoring period")
+    print("Database ready")
 except Exception as e:
     print("DB init error: {}".format(e))
 
