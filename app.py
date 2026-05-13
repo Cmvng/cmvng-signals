@@ -113,16 +113,24 @@ def init_db():
 # TELEGRAM
 # ═══════════════════════════════════════
 
+TELEGRAM_CHANNEL_ID = os.environ.get("TELEGRAM_CHANNEL_ID", "-1001491703047")
+
 def send_telegram(message):
-    if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID:
+    if not TELEGRAM_TOKEN:
         return
-    try:
-        requests.post(
-            "https://api.telegram.org/bot{}/sendMessage".format(TELEGRAM_TOKEN),
-            json={"chat_id": TELEGRAM_CHAT_ID, "text": message, "parse_mode": "HTML"}, timeout=10
-        )
-    except Exception as e:
-        print("Telegram error: {}".format(e))
+    url = "https://api.telegram.org/bot{}/sendMessage".format(TELEGRAM_TOKEN)
+    # Send to personal chat
+    if TELEGRAM_CHAT_ID:
+        try:
+            requests.post(url, json={"chat_id": TELEGRAM_CHAT_ID, "text": message, "parse_mode": "HTML"}, timeout=10)
+        except Exception as e:
+            print("Telegram personal error: {}".format(e))
+    # Send to channel
+    if TELEGRAM_CHANNEL_ID:
+        try:
+            requests.post(url, json={"chat_id": TELEGRAM_CHANNEL_ID, "text": message, "parse_mode": "HTML"}, timeout=10)
+        except Exception as e:
+            print("Telegram channel error: {}".format(e))
 
 # ═══════════════════════════════════════
 # PRICE FETCH — TwelveData batch + Binance fallback
