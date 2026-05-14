@@ -43,6 +43,9 @@ PAIRS = {
     "GBPAUD_15M":  {"category": "Tier 2", "risk": 0.25, "grade": "B - Good"},
     "SOLUSD_15M":  {"category": "Crypto", "risk": 0.1,  "grade": "B - Good"},
     "ETHUSD_15M":  {"category": "Crypto", "risk": 0.1,  "grade": "B - Good"},
+    "XAGUSD_15M":  {"category": "Tier 2", "risk": 0.25, "grade": "A - Strong"},
+    "AUDUSD_30M":  {"category": "Tier 2", "risk": 0.25, "grade": "B - Good"},
+    "NZDUSD_30M":  {"category": "Tier 2", "risk": 0.25, "grade": "B - Good"},
 }
 
 SYMBOL_MAP = {
@@ -672,6 +675,9 @@ body{font-family:'DM Sans',sans-serif;background:var(--bg);color:var(--text);ove
     <div class="ptag">MNTUSD<span>15M · Crypto</span></div>
     <div class="ptag">MNTUSD<span>1H · Crypto</span></div>
     <div class="ptag">ZECUSD<span>15M · Crypto</span></div>
+    <div class="ptag">XAGUSD<span>15M · Tier 2</span></div>
+    <div class="ptag">AUDUSD<span>30M · Tier 2</span></div>
+    <div class="ptag">NZDUSD<span>30M · Tier 2</span></div>
   </div>
 </div>
 <div class="footer">Cmvng Bot — Automated Trading Signal System &nbsp;·&nbsp; Built with precision</div>
