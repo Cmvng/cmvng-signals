@@ -13,6 +13,7 @@ TELEGRAM_TOKEN   = os.environ.get("TELEGRAM_TOKEN", "")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "")
 TWELVEDATA_KEY   = os.environ.get("TWELVEDATA_KEY", "")
 DATABASE_URL     = os.environ.get("DATABASE_URL", "")
+COMPANION_BOT_URL = os.environ.get("COMPANION_BOT_URL", "")
 EXPIRY_DAYS      = 3
 CHECK_INTERVAL   = 900
 
@@ -134,6 +135,13 @@ def send_telegram(message):
             requests.post(url, json={"chat_id": TELEGRAM_CHANNEL_ID, "text": message, "parse_mode": "HTML"}, timeout=10)
         except Exception as e:
             print("Telegram channel error: {}".format(e))
+    # Send to companion bot for individual user delivery
+    if COMPANION_BOT_URL:
+        try:
+            requests.post("{}/broadcast".format(COMPANION_BOT_URL),
+                json={"message": message}, timeout=10)
+        except Exception as e:
+            print("Companion bot error: {}".format(e))
 
 # ═══════════════════════════════════════
 # PRICE FETCH — TwelveData batch + Binance fallback
